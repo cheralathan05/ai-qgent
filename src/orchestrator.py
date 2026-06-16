@@ -28,6 +28,11 @@ from approval_ui.approval_context import (
 from database.models import WorkflowStatus
 from devices import device_manager, DeviceStatus
 from security.credential_manager import get_credential_manager, CredentialType, PINProcessor
+from services.intent_agent import get_intent_agent
+from services.planner_agent import get_planner_agent
+from services.ollama_service import get_ollama_service
+from services.adb_service import get_adb_service
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -44,17 +49,22 @@ class WorkflowOrchestrator:
         app_db=None,
     ):
         self.session = session
-        self.adb = adb_client
-        self.ollama = ollama_client
+        self.adb = adb_client or get_adb_service(
+            Config.get_adb_config().adb_path,
+            Config.get_adb_config().default_timeout,
+        )
+        self.ollama = ollama_client or get_ollama_service()
         
         # Initialize all layers
         self.event_manager = get_event_manager()
+        self.intent_agent = get_intent_agent()
+        self.planner_agent = get_planner_agent()
         self.command_engine = get_command_understanding_engine(contact_db, app_db)
         self.retry_manager = get_retry_manager()
         self.timeout_manager = get_timeout_manager()
         self.device_manager = device_manager
-        self.device_intel = get_device_intelligence(adb_client)
-        self.execution_verifier = get_execution_verifier(adb_client, self.device_intel)
+        self.device_intel = get_device_intelligence(self.adb)
+        self.execution_verifier = get_execution_verifier(self.adb, self.device_intel)
         self.audit_manager = get_audit_manager(session)
         self.approval_builder = get_approval_context_builder(session)
         self.credential_manager = get_credential_manager(session)
@@ -114,7 +124,7 @@ class WorkflowOrchestrator:
             
             # Understand command
             intent_result = await self.timeout_manager.execute_intent_detection(
-                self.command_engine.understand,
+                self.intent_agent.detect_intent,
                 command,
             )
             
@@ -134,7 +144,7 @@ class WorkflowOrchestrator:
                     ],
                     "slots": intent_result.slots,
                 },
-                source="command_engine",
+                source="intent_agent",
                 severity=EventSeverity.INFO,
                 user_id=user_id,
             )
@@ -200,7 +210,10 @@ class WorkflowOrchestrator:
                 # await request_user_pin_async(user_id)
             
             # ==================== Stage 3: Plan Creation ====================
-            plan_steps = self._create_plan_steps(intent_result)
+            plan_steps = self.planner_agent.plan(intent_result)
+            if not plan_steps:
+                plan_steps = self._create_plan_steps(intent_result)
+
             await self.event_manager.emit(
                 workflow_id=workflow_id,
                 event_type=EventType.PLAN_CREATED,
@@ -407,7 +420,7 @@ class WorkflowOrchestrator:
             }
     
     def _create_plan_steps(self, intent_result) -> List[Dict[str, Any]]:
-        """Create execution plan from intent"""
+        """Create execution plan from intent as a fallback."""
         steps = []
         
         if intent_result.intent.value == "open_app":
@@ -494,10 +507,6 @@ class WorkflowOrchestrator:
         return results
 
 
-# Global instance
-workflow_orchestrator = None
-
-
 def get_workflow_orchestrator(
     session=None,
     adb_client=None,
@@ -505,14 +514,11 @@ def get_workflow_orchestrator(
     contact_db=None,
     app_db=None,
 ) -> WorkflowOrchestrator:
-    """Get or create workflow orchestrator"""
-    global workflow_orchestrator
-    if workflow_orchestrator is None:
-        workflow_orchestrator = WorkflowOrchestrator(
-            session,
-            adb_client,
-            ollama_client,
-            contact_db,
-            app_db,
-        )
-    return workflow_orchestrator
+    """Create a workflow orchestrator instance."""
+    return WorkflowOrchestrator(
+        session,
+        adb_client,
+        ollama_client,
+        contact_db,
+        app_db,
+    )

@@ -25,11 +25,13 @@ if SRC_DIR not in sys.path:
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from devices import device_manager, WindowsDevice
+from devices import device_manager, WindowsDevice, AndroidDevice
 
 # Import core modules
 from config import Config
 from database.connection import init_database, close_database
+from services.adb_service import get_adb_service
+from services.redis_service import get_redis_service
 
 # Initialize configuration
 config = Config()
@@ -83,7 +85,15 @@ async def lifespan(app: FastAPI):
     # Persist events to database
     event_manager.subscribe(DatabaseEventSubscriber())
     logger.info("Event database subscriber initialized")
-    
+
+    # Initialize Redis
+    try:
+        redis_service = get_redis_service()
+        await redis_service.connect()
+        logger.info("Redis initialized")
+    except Exception as exc:
+        logger.warning(f"Redis initialization failed: {exc}")
+
     # Register local Windows laptop device
     device_manager.register_device(
         WindowsDevice(
@@ -93,7 +103,21 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Local Windows device registered")
 
-    # Initialize other services
+    # Register connected Android devices if ADB available
+    try:
+        adb_service = get_adb_service(
+            Config.get_adb_config().adb_path,
+            Config.get_adb_config().default_timeout,
+        )
+        devices = await adb_service.list_devices()
+        for device in devices:
+            serial = device.get("serial")
+            if serial:
+                device_manager.register_device(AndroidDevice(device_id=serial, adb_client=adb_service))
+        logger.info("Connected Android devices registered")
+    except Exception as exc:
+        logger.warning(f"Android device registration failed: {exc}")
+
     logger.info("All services initialized")
     
     yield
@@ -140,7 +164,7 @@ for route in api_app.routes:
 async def websocket_events(websocket: WebSocket, client_id: str):
     """
     WebSocket endpoint for real-time event streaming
-    
+
     Usage:
         ws = new WebSocket("ws://localhost:8000/ws/events/client-1");
         ws.onmessage = (event) => {
@@ -193,7 +217,39 @@ def run_server():
 
 if __name__ == "__main__":
     try:
-        run_server()
+        # When invoked directly (python main.py) disable uvicorn auto-reload
+        # to avoid filesystem watch loops on some Windows setups.
+        # Attempt to bind to configured port; if it's in use, try the next few ports.
+        start_port = config.API_PORT
+        max_tries = 5
+        import socket
+
+        for attempt in range(max_tries):
+            port = start_port + attempt
+
+            # Quick check: attempt to bind a temporary socket to ensure port availability
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.bind((config.API_HOST, port))
+                sock.close()
+            except OSError:
+                logger.warning(f"Port {port} unavailable, trying next port")
+                if attempt == max_tries - 1:
+                    logger.error("Failed to bind to any port; exiting")
+                    raise
+                continue
+
+            # Port looks free; start server on this port
+            uvicorn.run(
+                "main:app",
+                host=config.API_HOST,
+                port=port,
+                workers=config.API_WORKERS if not config.DEBUG else 1,
+                reload=False,
+                reload_excludes=[config.LOG_FILE],
+                log_level=config.LOG_LEVEL.lower(),
+            )
+            break
     except KeyboardInterrupt:
         logger.info("Server interrupted by user")
     except Exception as e:

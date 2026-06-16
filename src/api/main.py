@@ -17,7 +17,10 @@ from database.models import (
 from console.event_stream import EventType, EventSeverity, get_event_manager, EventQueueSubscriber
 from audit.audit_manager import get_audit_manager
 from devices import device_manager
-from orchestrator import get_workflow_orchestrator
+from services.workflow_engine import get_workflow_engine
+from services.voice_service import get_voice_service
+from services.adb_service import get_adb_service
+from services.redis_service import get_redis_service
 from api.life_direction import router as life_direction_router
 
 app = FastAPI(
@@ -417,9 +420,13 @@ async def stream_workflow_events(workflow_id: str):
 
 # ==================== Device APIs ====================
 
+class VoiceWorkflowRequest(CreateWorkflowRequest):
+    voice_input: Optional[bool] = False
+
+
 @app.post("/workflows", tags=["Workflows"])
 async def create_workflow(
-    request: CreateWorkflowRequest,
+    request: VoiceWorkflowRequest,
     session=Depends(get_session)
 ) -> Dict[str, Any]:
     """Create and execute a workflow"""
@@ -432,12 +439,13 @@ async def create_workflow(
         device_id=request.device_id,
     )
 
-    orchestrator = get_workflow_orchestrator(session=session)
+    orchestrator = get_workflow_engine(session=session)
     result = await orchestrator.execute_command(
         user_id=request.user_id,
         command=request.command,
         device_id=request.device_id,
         workflow_id=workflow_id,
+        voice_input=request.voice_input,
     )
 
     return {"workflow_id": workflow_id, **result}
@@ -538,12 +546,13 @@ async def execute_workflow_background(workflow_id: str):
     if workflow is None:
         return
 
-    orchestrator = get_workflow_orchestrator()
+    orchestrator = get_workflow_engine()
     try:
         await orchestrator.execute_command(
             user_id=workflow.user_id,
             command=workflow.command,
             device_id=workflow.device_id or "laptop",
+            workflow_id=workflow.id,
         )
     except Exception as exc:
         logger.error(f"Background workflow {workflow_id} failed: {exc}")

@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: apa_os_postgres
+    environment:
+      POSTGRES_USER: apa_user
+      POSTGRES_PASSWORD: apa_os_secure_password_change_me
+      POSTGRES_DB: apa_os
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apa_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - apa_os_network
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: apa_os_api
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: apa_user
+      DB_PASSWORD: apa_os_secure_password_change_me
+      DB_NAME: apa_os
+      ENVIRONMENT: production
+      LOG_LEVEL: INFO
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - apa_os_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: apa_os_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - apa_os_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  apa_os_network:
+    driver: bridge

@@ -21,14 +21,19 @@ class DeviceInfo:
     foreground_app: Optional[str]
     installed_apps: Set[str]
     capabilities: Set[str]
+    device_type: str = "generic"
     model_name: Optional[str] = None
     os_version: Optional[str] = None
+    android_version: Optional[str] = None
+    screen_state: Optional[str] = None
+    lock_state: Optional[bool] = None
     additional: Dict[str, Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "device_id": self.device_id,
             "status": self.status.value,
+            "type": self.device_type,
             "is_locked": self.is_locked,
             "battery_level": self.battery_level,
             "foreground_app": self.foreground_app,
@@ -36,6 +41,9 @@ class DeviceInfo:
             "capabilities": sorted(self.capabilities),
             "model_name": self.model_name,
             "os_version": self.os_version,
+            "android_version": self.android_version,
+            "screen_state": self.screen_state,
+            "lock_state": self.lock_state,
             "additional": self.additional or {},
         }
 

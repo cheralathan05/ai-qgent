@@ -20,6 +20,7 @@ class DriveDevice(Device):
             foreground_app=None,
             installed_apps=set(),
             capabilities={"drive"},
+            device_type="drive",
             model_name=f"{self.provider} Drive",
             os_version="cloud",
             additional={"provider": self.provider},

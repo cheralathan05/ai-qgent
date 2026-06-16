@@ -9,6 +9,7 @@ from .intent_agent import get_intent_agent
 from .voice_service import get_voice_service
 from .planner_agent import get_planner_agent
 from .workflow_engine import get_workflow_engine
+from .device_agent import get_device_agent
 
 __all__ = [
     "get_adb_service",
@@ -20,4 +21,5 @@ __all__ = [
     "get_voice_service",
     "get_planner_agent",
     "get_workflow_engine",
+    "get_device_agent",
 ]

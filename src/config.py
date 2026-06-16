@@ -13,6 +13,33 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _get_env_value(*names: str, default: str = "") -> str:
+    """Return the first non-empty environment value from a list of names."""
+    for name in names:
+        value = os.getenv(name)
+        if value is not None:
+            value = value.strip()
+            if value:
+                return value
+    return default
+
+
+def _get_bool_env(*names: str, default: bool = False) -> bool:
+    """Read a boolean environment variable with common truthy values."""
+    value = _get_env_value(*names, default="")
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _get_path_env(*names: str, default: str = "") -> str:
+    """Read a filesystem path environment variable and normalize it."""
+    value = _get_env_value(*names, default=default)
+    if not value:
+        return default
+    return os.path.normpath(value.strip().strip('"').strip("'"))
+
+
 @dataclass
 class DatabaseConfig:
     """Database configuration"""
@@ -116,12 +143,14 @@ class Config:
         )
     
     # ADB
-    ADB_PATH = os.getenv("ADB_PATH", "adb")
+    ADB_PATH = _get_path_env("ADB_PATH", default="adb")
     adb_config = ADBConfig(adb_path=ADB_PATH)
     
     # Ollama
-    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
-    OLLAMA_PORT = int(os.getenv("OLLAMA_PORT", "11434"))
+    _OLLAMA_SOURCE = _get_env_value("OLLAMA_URL", "OLLAMA_HOST", default="localhost")
+    _OLLAMA_PARSED = urlparse(_OLLAMA_SOURCE if "://" in _OLLAMA_SOURCE else f"http://{_OLLAMA_SOURCE}")
+    OLLAMA_HOST = _OLLAMA_PARSED.hostname or _OLLAMA_SOURCE
+    OLLAMA_PORT = int(_get_env_value("OLLAMA_PORT", default=str(_OLLAMA_PARSED.port or 11434)))
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     ollama_config = OllamaConfig(
@@ -151,8 +180,8 @@ class Config:
     )
     
     # API
-    API_HOST = os.getenv("API_HOST", "0.0.0.0")
-    API_PORT = int(os.getenv("API_PORT", "8000"))
+    API_HOST = _get_env_value("API_HOST", "HOST", default="0.0.0.0")
+    API_PORT = int(_get_env_value("API_PORT", "PORT", default="8000"))
     API_WORKERS = int(os.getenv("API_WORKERS", "4"))
     
     # Logging
@@ -161,7 +190,7 @@ class Config:
     
     # Environment
     ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
-    DEBUG = ENVIRONMENT == "development"
+    DEBUG = _get_bool_env("DEBUG", default=ENVIRONMENT == "development")
     
     @classmethod
     def get_database_config(cls) -> DatabaseConfig:

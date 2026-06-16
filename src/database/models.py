@@ -131,6 +131,36 @@ class ExecutionRecord(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class WorkflowState(Base):
+    """Current workflow state snapshot"""
+    __tablename__ = "workflow_states"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    workflow_id = Column(String(36), ForeignKey('workflows.id'), nullable=False, index=True)
+    state_name = Column(String(100), nullable=False, index=True)
+    status = Column(String(50), nullable=False)
+    current_step = Column(Integer, nullable=True)
+    state_data = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class DeviceAction(Base):
+    """Low-level device action record"""
+    __tablename__ = "device_actions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    workflow_id = Column(String(36), ForeignKey('workflows.id'), nullable=False, index=True)
+    device_id = Column(String(255), nullable=False, index=True)
+    action_type = Column(String(100), nullable=False, index=True)
+    action_data = Column(JSON, nullable=False, default=dict)
+    status = Column(String(50), nullable=False)
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
 class Mission(Base):
     """Mission record for workflows"""
     __tablename__ = "missions"

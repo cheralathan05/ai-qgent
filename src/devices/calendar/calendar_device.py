@@ -20,6 +20,7 @@ class CalendarDevice(Device):
             foreground_app=None,
             installed_apps=set(),
             capabilities={"calendar"},
+            device_type="calendar",
             model_name=f"{self.provider} Calendar",
             os_version="cloud",
             additional={"provider": self.provider},

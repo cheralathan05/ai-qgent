@@ -93,6 +93,8 @@ class WorkflowOrchestrator:
 
         workflow_id = workflow_id or str(uuid.uuid4())
         start_time = datetime.utcnow()
+        detected_intent = "unknown"
+        detected_target = None
 
         existing_workflow = get_workflow(workflow_id)
         if existing_workflow is None:
@@ -127,12 +129,19 @@ class WorkflowOrchestrator:
                 self.intent_agent.detect_intent,
                 command,
             )
+            detected_intent = intent_result.intent.value
+            detected_target = intent_result.slots.get("app") or intent_result.slots.get("target")
+
+            update_workflow(
+                workflow_id,
+                intent=detected_intent,
+            )
             
             await self.event_manager.emit(
                 workflow_id=workflow_id,
                 event_type=EventType.ENTITIES_EXTRACTED,
                 payload={
-                    "intent": intent_result.intent.value,
+                    "intent": detected_intent,
                     "confidence": intent_result.confidence,
                     "entities": [
                         {
@@ -218,7 +227,7 @@ class WorkflowOrchestrator:
                 workflow_id=workflow_id,
                 event_type=EventType.PLAN_CREATED,
                 payload={
-                    "intent": intent_result.intent.value,
+                    "intent": detected_intent,
                     "steps": plan_steps,
                 },
                 source="planner_agent",
@@ -377,6 +386,9 @@ class WorkflowOrchestrator:
             return {
                 "success": True,
                 "workflow_id": workflow_id,
+                "intent": detected_intent,
+                "target": detected_target,
+                "status": "completed",
                 "results": results,
                 "duration_ms": duration_ms,
             }
@@ -414,6 +426,9 @@ class WorkflowOrchestrator:
             return {
                 "success": False,
                 "workflow_id": workflow_id,
+                "intent": detected_intent,
+                "target": detected_target,
+                "status": "failed",
                 "error": str(e),
                 "failure_type": failure_info.failure_type.value,
                 "is_recoverable": failure_info.is_recoverable,

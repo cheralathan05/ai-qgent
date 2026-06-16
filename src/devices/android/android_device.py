@@ -34,6 +34,9 @@ class AndroidDevice(Device):
         super().__init__(device_id)
         self.adb = adb_client
 
+    def _resolve_package_name(self, app_name: str) -> str:
+        return self.APP_PACKAGE_MAP.get(app_name.lower(), app_name)
+
     async def get_info(self) -> DeviceInfo:
         if not self.adb:
             return DeviceInfo(
@@ -43,7 +46,8 @@ class AndroidDevice(Device):
                 battery_level=None,
                 foreground_app=None,
                 installed_apps=set(),
-                capabilities={"android"},
+                capabilities={"applications", "screenshots", "input", "notifications", "files"},
+                device_type="android",
                 model_name="Android Device",
                 os_version="Android",
                 additional={"adb_available": False},
@@ -57,18 +61,20 @@ class AndroidDevice(Device):
                 battery_level=None,
                 foreground_app=None,
                 installed_apps=set(),
-                capabilities={"android"},
+                capabilities={"applications", "screenshots", "input", "notifications", "files"},
+                device_type="android",
                 model_name="Android Device",
                 os_version="Android",
                 additional={"adb_available": True},
             )
 
         installed_apps = await self._get_installed_apps()
-        foreground_app = await self._get_foreground_app()
+        foreground_app = await self.get_foreground_app()
         is_locked = await self._is_locked()
-        battery_level = await self._get_battery_level()
+        battery_level = await self.get_battery()
         android_version = await self._get_android_version()
         model_name = await self._get_model_name()
+        screen_state = await self._get_screen_state()
 
         return DeviceInfo(
             device_id=self.device_id,
@@ -77,9 +83,13 @@ class AndroidDevice(Device):
             battery_level=battery_level,
             foreground_app=foreground_app,
             installed_apps=installed_apps,
-            capabilities={"android", "touch"},
+            capabilities={"applications", "screenshots", "input", "notifications", "files"},
+            device_type="android",
             model_name=model_name,
-            os_version=android_version,
+            os_version=f"Android {android_version}".strip(),
+            android_version=android_version,
+            screen_state=screen_state,
+            lock_state=is_locked,
             additional={"adb_available": True},
         )
 
@@ -98,30 +108,26 @@ class AndroidDevice(Device):
             return set()
 
     async def _get_foreground_app(self) -> Optional[str]:
-        try:
-            result = await self.adb.shell(
-                self.device_id,
-                "dumpsys window windows | grep 'mCurrentFocus' | head -1"
-            )
-            if "/" in result:
-                return result.split("/")[0].split()[-1]
-            return None
-        except Exception:
-            return None
+        return await self.get_foreground_app()
 
     async def _is_locked(self) -> bool:
         try:
-            result = await self.adb.shell(self.device_id, "dumpsys window policy | grep isStatusBarKeyguard")
-            return "true" in result.lower()
+            result = await self.adb.shell(self.device_id, "dumpsys window policy")
+            lowered = result.lower()
+            return any(
+                token in lowered
+                for token in (
+                    "mshowinglockscreen=true",
+                    "isstatusbarkeyguard=true",
+                    "lockscreen",
+                    "keyguard showing=true",
+                )
+            )
         except Exception:
             return False
 
     async def _get_battery_level(self) -> Optional[int]:
-        try:
-            result = await self.adb.shell(self.device_id, "dumpsys battery | grep level")
-            return int(result.split(":")[-1].strip())
-        except Exception:
-            return None
+        return await self.get_battery()
 
     async def _get_android_version(self) -> str:
         try:
@@ -135,22 +141,123 @@ class AndroidDevice(Device):
         except Exception:
             return ""
 
+    async def _get_screen_state(self) -> str:
+        try:
+            result = await self.adb.shell(self.device_id, "dumpsys display")
+            lowered = result.lower()
+            if "state=on" in lowered or "mdisplaystate=2" in lowered or "display power: state=on" in lowered:
+                return "on"
+            if "state=off" in lowered or "mdisplaystate=1" in lowered:
+                return "off"
+            return "unknown"
+        except Exception:
+            return "unknown"
+
     async def launch_app(self, app_name: str) -> Dict[str, Any]:
+        return await self.open_app(app_name)
+
+    async def open_app(self, app_name: str) -> Dict[str, Any]:
         if not self.adb:
             return {"status": "error", "message": "ADB client unavailable"}
 
-        package_name = self.APP_PACKAGE_MAP.get(app_name.lower(), app_name)
+        package_name = self._resolve_package_name(app_name)
         activity = self.APP_MAIN_ACTIVITY.get(package_name)
 
         try:
             if activity:
                 await self.adb.start_activity(self.device_id, package_name, activity)
             else:
-                await self.adb.monkey_launch(self.device_id, package_name)
+                await self.adb.open_app(self.device_id, package_name)
 
             await asyncio.sleep(2)
             return {"status": "success", "app": package_name}
 
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    async def close_app(self, app_name: str) -> Dict[str, Any]:
+        if not self.adb:
+            return {"status": "error", "message": "ADB client unavailable"}
+
+        try:
+            package_name = self._resolve_package_name(app_name)
+            await self.adb.close_app(self.device_id, package_name)
+            return {"status": "success", "app": package_name}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    async def get_battery(self) -> Optional[int]:
+        if not self.adb:
+            return None
+        return await self.adb.get_battery_level(self.device_id)
+
+    async def get_foreground_app(self) -> Optional[str]:
+        if not self.adb:
+            return None
+        return await self.adb.get_foreground_app(self.device_id)
+
+    async def verify_foreground_app(self, app_name: str) -> Dict[str, Any]:
+        if not self.adb:
+            return {"status": "error", "message": "ADB client unavailable"}
+
+        try:
+            package_name = self._resolve_package_name(app_name)
+            current_app = await self.get_foreground_app()
+            return {
+                "status": "success" if current_app == package_name else "failure",
+                "expected": package_name,
+                "current": current_app,
+            }
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    async def get_device_status(self) -> Dict[str, Any]:
+        if not self.adb:
+            return {
+                "device_id": self.device_id,
+                "connected": False,
+                "status": "disconnected",
+                "type": "android",
+                "model_name": None,
+                "battery_level": None,
+                "foreground_app": None,
+                "is_locked": False,
+                "android_version": None,
+                "screen_state": None,
+                "lock_state": None,
+                "capabilities": ["applications", "screenshots", "input", "notifications", "files"],
+            }
+
+        devices = await self.adb.list_devices()
+        connected = any(device.get("serial") == self.device_id for device in devices)
+        model_name = await self._get_model_name() if connected else None
+        android_version = await self._get_android_version() if connected else None
+        battery_level = await self.get_battery() if connected else None
+        foreground_app = await self.get_foreground_app() if connected else None
+        is_locked = await self._is_locked() if connected else False
+        screen_state = await self._get_screen_state() if connected else None
+        return {
+            "device_id": self.device_id,
+            "connected": connected,
+            "status": "connected" if connected else "disconnected",
+            "type": "android",
+            "model_name": model_name,
+            "battery_level": battery_level,
+            "foreground_app": foreground_app,
+            "is_locked": is_locked,
+            "android_version": android_version,
+            "screen_state": screen_state,
+            "lock_state": is_locked,
+            "capabilities": ["applications", "screenshots", "input", "notifications", "files"],
+        }
+
+    async def take_screenshot(self) -> Dict[str, Any]:
+        if not self.adb:
+            return {"status": "error", "message": "ADB client unavailable"}
+
+        try:
+            screenshot = await self.adb.take_screenshot(self.device_id)
+            return {"status": "success", "device_id": self.device_id, "screenshot": screenshot}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
@@ -168,9 +275,9 @@ class AndroidDevice(Device):
         if not self.adb:
             return {"status": "error", "message": "ADB client unavailable"}
 
-        package_name = self.APP_PACKAGE_MAP.get(app_name.lower(), app_name)
+        package_name = self._resolve_package_name(app_name)
         for _ in range(timeout_seconds):
-            current = await self._get_foreground_app()
+            current = await self.get_foreground_app()
             if current == package_name:
                 return {"status": "success", "app": package_name, "verification": "opened"}
             await asyncio.sleep(1)
@@ -179,5 +286,5 @@ class AndroidDevice(Device):
             "status": "failure",
             "app": package_name,
             "verification": "timeout",
-            "foreground_app": await self._get_foreground_app(),
+            "foreground_app": await self.get_foreground_app(),
         }

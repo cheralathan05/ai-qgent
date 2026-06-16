@@ -26,6 +26,7 @@ class WindowsDevice(Device):
             foreground_app=None,
             installed_apps=set(),
             capabilities={"browser", "file_system", "applications"},
+            device_type="windows",
             model_name="Windows Laptop",
             os_version="Windows",
             additional={"user": self.windows_user},

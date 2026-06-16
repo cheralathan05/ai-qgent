@@ -25,6 +25,7 @@ class BrowserDevice(Device):
             foreground_app="browser",
             installed_apps={self.browser},
             capabilities={"browser"},
+            device_type="browser",
             model_name="Web Browser",
             os_version="web",
             additional={"browser": self.browser},

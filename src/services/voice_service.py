@@ -1,9 +1,15 @@
-"""Voice transcription service using Whisper local model via Ollama."""
+"""Voice transcription service using local Whisper inference."""
 
 import asyncio
 import logging
-from typing import Dict, Any
-from services.ollama_service import get_ollama_service, OllamaServiceError
+from typing import Optional
+
+try:
+    import whisper
+except ImportError:  # pragma: no cover
+    whisper = None
+
+from services.ollama_service import OllamaServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -11,18 +17,24 @@ logger = logging.getLogger(__name__)
 class VoiceService:
     """Transcribes audio to text using local Whisper model."""
 
-    PROMPT_TEMPLATE = "Transcribe the following audio into text. Return plain text only."
-
     def __init__(self):
-        self.ollama_service = get_ollama_service()
+        self._model = None
+
+    def _get_model(self):
+        if whisper is None:
+            raise OllamaServiceError("whisper is not installed")
+        if self._model is None:
+            self._model = whisper.load_model("base")
+        return self._model
+
+    def _transcribe_sync(self, audio_path: str) -> str:
+        model = self._get_model()
+        result = model.transcribe(audio_path, fp16=False)
+        return (result.get("text") or "").strip()
 
     async def transcribe_audio(self, audio_path: str) -> str:
         try:
-            prompt = f"{self.PROMPT_TEMPLATE}\nAudio file: {audio_path}\n"
-            result = await self.ollama_service.generate(prompt, max_tokens=256)
-            if "choices" in result and result["choices"]:
-                return result["choices"][0].get("text", "").strip()
-            return ""
+            return await asyncio.to_thread(self._transcribe_sync, audio_path)
         except Exception as exc:
             logger.error(f"Voice transcription failed: {exc}")
             raise OllamaServiceError(str(exc))

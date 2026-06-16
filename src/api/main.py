@@ -4,24 +4,35 @@ Complete API surface for APA-OS Backend
 """
 
 from fastapi import FastAPI, HTTPException, Query, Depends, BackgroundTasks
+from fastapi import UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+import logging
+import os
 import json
 import asyncio
+import tempfile
 
 from database.models import (
-    Workflow, WorkflowStatus, ApprovalStatus, AuditEvent, EventSnapshot
+    Workflow, WorkflowStatus, ApprovalStatus, AuditEvent, EventSnapshot,
+    CommandRecord, ExecutionRecord, WorkflowState, DeviceAction
 )
 from console.event_stream import EventType, EventSeverity, get_event_manager, EventQueueSubscriber
 from audit.audit_manager import get_audit_manager
-from devices import device_manager
+from devices import device_manager, AndroidDevice, DeviceStatus
 from services.workflow_engine import get_workflow_engine
+from services.intent_agent import get_intent_agent
+from services.planner_agent import get_planner_agent
 from services.voice_service import get_voice_service
 from services.adb_service import get_adb_service
+from services.device_agent import get_device_agent
 from services.redis_service import get_redis_service
+from config import Config
 from api.life_direction import router as life_direction_router
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="APA-OS Backend",
@@ -49,6 +60,16 @@ class CreateWorkflowRequest(BaseModel):
     device_id: Optional[str] = "laptop"
 
 
+class CommandRequest(BaseModel):
+    command: str
+    device_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+class ExecuteRequest(BaseModel):
+    workflow_id: str
+
+
 async def get_session():
     """Get database session"""
     from database.connection import get_db_session
@@ -57,6 +78,161 @@ async def get_session():
         yield session
     finally:
         session.close()
+
+
+def _extract_target(intent_result) -> Optional[str]:
+    return intent_result.slots.get("app") or intent_result.slots.get("target")
+
+
+DEFAULT_USER_ID = "phase1-user"
+
+
+def _resolve_device_id(preferred_device_id: Optional[str] = None) -> str:
+    """Pick the best available execution target."""
+    if preferred_device_id and device_manager.get_device(preferred_device_id) is not None:
+        return preferred_device_id
+
+    devices = device_manager.list_devices()
+    android_devices = [device for device in devices if isinstance(device, AndroidDevice)]
+
+    if android_devices:
+        return android_devices[0].device_id
+
+    if device_manager.get_device("laptop") is not None:
+        return "laptop"
+
+    if devices:
+        return devices[0].device_id
+
+    return preferred_device_id or "laptop"
+
+
+def _build_simple_response(result: Dict[str, Any], command: str, transcript: Optional[str] = None) -> Dict[str, Any]:
+    """Format a user-facing response for the phase 1 command flow."""
+    target = result.get("target")
+    success = bool(result.get("success"))
+
+    if success and target:
+        message = f"✓ {str(target).title()} Opened Successfully"
+    elif success:
+        message = "✓ Command Completed Successfully"
+    else:
+        message = result.get("error") or "Command failed"
+
+    payload = {
+        "success": success,
+        "intent": result.get("intent"),
+        "target": target,
+        "status": result.get("status", "completed" if success else "failed"),
+        "message": message,
+        "workflow_id": result.get("workflow_id"),
+        "command": command,
+    }
+
+    if transcript is not None:
+        payload["transcript"] = transcript
+
+    return payload
+
+
+async def _execute_user_command(
+    *,
+    session,
+    command: str,
+    user_id: Optional[str] = None,
+    device_id: Optional[str] = None,
+    voice_input: bool = False,
+    workflow_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run the shared command pipeline with sensible phase 1 defaults."""
+    orchestrator = get_workflow_engine(session=session)
+    resolved_user_id = user_id or DEFAULT_USER_ID
+    resolved_device_id = _resolve_device_id(device_id)
+
+    return await orchestrator.execute_command(
+        user_id=resolved_user_id,
+        command=command,
+        device_id=resolved_device_id,
+        workflow_id=workflow_id,
+        voice_input=voice_input,
+    )
+
+
+async def _refresh_android_devices() -> None:
+    """Discover connected Android devices and register them in memory and the database."""
+    device_agent = get_device_agent(get_adb_service(Config.get_adb_config().adb_path, Config.get_adb_config().default_timeout))
+    await device_agent.discover_devices()
+
+
+async def _create_workflow_record(
+    *,
+    session,
+    user_id: str,
+    command: str,
+    intent: str,
+    device_id: str,
+    plan_json: Optional[List[Dict[str, Any]]],
+) -> Workflow:
+    workflow = Workflow(
+        user_id=user_id,
+        command=command,
+        intent=intent,
+        status=WorkflowStatus.PENDING,
+        device_id=device_id,
+        plan_json=plan_json,
+    )
+    session.add(workflow)
+    session.commit()
+    session.refresh(workflow)
+
+    session.add(CommandRecord(workflow_id=workflow.id, command_text=command))
+    session.add(WorkflowState(
+        workflow_id=workflow.id,
+        state_name="command_received",
+        status="pending",
+        current_step=0,
+        state_data={"command": command, "intent": intent, "device_id": device_id},
+    ))
+    session.commit()
+    return workflow
+
+
+async def _record_execution(
+    *,
+    session,
+    workflow: Workflow,
+    execution_result: Dict[str, Any],
+) -> str:
+    execution = ExecutionRecord(
+        workflow_id=workflow.id,
+        status="completed" if execution_result.get("success") else "failed",
+        result=execution_result,
+        started_at=workflow.start_time,
+        ended_at=datetime.utcnow(),
+    )
+    session.add(execution)
+    session.add(WorkflowState(
+        workflow_id=workflow.id,
+        state_name="execution_finished",
+        status="completed" if execution_result.get("success") else "failed",
+        current_step=len(execution_result.get("results", []) or []),
+        state_data=execution_result,
+    ))
+
+    for index, result in enumerate(execution_result.get("results", []) or [], start=1):
+        session.add(DeviceAction(
+            workflow_id=workflow.id,
+            device_id=workflow.device_id or "laptop",
+            action_type=result.get("type") or f"step_{index}",
+            action_data=result,
+            status=result.get("status", "success"),
+            result=result,
+            completed_at=datetime.utcnow(),
+        ))
+
+    session.commit()
+    session.refresh(execution)
+    return execution.id
 
 
 # ==================== Workflow APIs ====================
@@ -432,28 +608,198 @@ async def create_workflow(
     """Create and execute a workflow"""
     from database.connection import create_workflow
 
+    await _refresh_android_devices()
+
+    resolved_device_id = _resolve_device_id(request.device_id)
+
     workflow_id = await create_workflow(
         user_id=request.user_id,
         command=request.command,
         intent="pending",
-        device_id=request.device_id,
+        device_id=resolved_device_id,
     )
 
-    orchestrator = get_workflow_engine(session=session)
-    result = await orchestrator.execute_command(
-        user_id=request.user_id,
+    result = await _execute_user_command(
+        session=session,
         command=request.command,
-        device_id=request.device_id,
-        workflow_id=workflow_id,
+        user_id=request.user_id,
+        device_id=resolved_device_id,
         voice_input=request.voice_input,
+        workflow_id=workflow_id,
     )
 
-    return {"workflow_id": workflow_id, **result}
+    workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if workflow is not None:
+        execution_id = await _record_execution(
+            session=session,
+            workflow=workflow,
+            execution_result=result,
+        )
+    else:
+        execution_id = None
+
+    response = {"workflow_id": workflow_id, **result}
+    if execution_id is not None:
+        response["execution_id"] = execution_id
+    return response
 
 
+@app.post("/command", tags=["Commands"])
+async def execute_command(
+    request: CommandRequest,
+    session=Depends(get_session),
+) -> Dict[str, Any]:
+    """Parse a command, build a workflow, execute it, and return the result."""
+    await _refresh_android_devices()
+
+    intent_agent = get_intent_agent()
+    planner_agent = get_planner_agent()
+
+    intent_result = await intent_agent.detect_intent(request.command)
+    plan_steps = planner_agent.plan(intent_result)
+    target = _extract_target(intent_result)
+    resolved_user_id = request.user_id or DEFAULT_USER_ID
+    resolved_device_id = _resolve_device_id(request.device_id)
+
+    workflow = await _create_workflow_record(
+        session=session,
+        user_id=resolved_user_id,
+        command=request.command,
+        intent=intent_result.intent.value,
+        device_id=resolved_device_id,
+        plan_json=plan_steps,
+    )
+
+    result = await _execute_user_command(
+        session=session,
+        command=request.command,
+        user_id=resolved_user_id,
+        device_id=resolved_device_id,
+        workflow_id=workflow.id,
+    )
+
+    execution_id = await _record_execution(
+        session=session,
+        workflow=workflow,
+        execution_result=result,
+    )
+
+    return {
+        "workflow_id": workflow.id,
+        "intent": intent_result.intent.value,
+        "target": target,
+        "execution_id": execution_id,
+        "status": result.get("status", "completed" if result.get("success") else "failed"),
+        "success": bool(result.get("success")),
+        "result": result,
+    }
+
+
+@app.post("/execute", tags=["Commands"])
+async def execute_workflow_command(
+    request: ExecuteRequest,
+    session=Depends(get_session),
+) -> Dict[str, Any]:
+    workflow = session.query(Workflow).filter(Workflow.id == request.workflow_id).first()
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    result = await _execute_user_command(
+        session=session,
+        command=workflow.command,
+        user_id=workflow.user_id,
+        device_id=workflow.device_id,
+        voice_input=False,
+        workflow_id=workflow.id,
+    )
+
+    execution_id = await _record_execution(
+        session=session,
+        workflow=workflow,
+        execution_result=result,
+    )
+
+    return {
+        "success": bool(result.get("success")),
+        "execution_id": execution_id,
+        "status": "completed" if result.get("success") else "failed",
+    }
+
+
+@app.post("/voice", tags=["Commands"])
+async def execute_voice_command(
+    audio_file: UploadFile = File(...),
+    device_id: Optional[str] = Form(None),
+    user_id: Optional[str] = Form(None),
+    session=Depends(get_session),
+) -> Dict[str, Any]:
+    """Transcribe audio, create a workflow, and execute the resulting command."""
+    temp_path = None
+
+    try:
+        await _refresh_android_devices()
+
+        suffix = os.path.splitext(audio_file.filename or "audio.wav")[1] or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_path = temp_file.name
+            temp_file.write(await audio_file.read())
+
+        transcript = await get_voice_service().transcribe_audio(temp_path)
+        if not transcript:
+            raise HTTPException(status_code=400, detail="Unable to transcribe audio")
+
+        intent_agent = get_intent_agent()
+        planner_agent = get_planner_agent()
+        intent_result = await intent_agent.detect_intent(transcript)
+        plan_steps = planner_agent.plan(intent_result)
+        target = _extract_target(intent_result)
+        resolved_user_id = user_id or DEFAULT_USER_ID
+        resolved_device_id = _resolve_device_id(device_id)
+
+        workflow = await _create_workflow_record(
+            session=session,
+            user_id=resolved_user_id,
+            command=transcript,
+            intent=intent_result.intent.value,
+            device_id=resolved_device_id,
+            plan_json=plan_steps,
+        )
+
+        result = await _execute_user_command(
+            session=session,
+            command=transcript,
+            user_id=resolved_user_id,
+            device_id=resolved_device_id,
+            voice_input=True,
+            workflow_id=workflow.id,
+        )
+
+        execution_id = await _record_execution(
+            session=session,
+            workflow=workflow,
+            execution_result=result,
+        )
+
+        response = _build_simple_response(result, transcript, transcript=transcript)
+        response.update({
+            "workflow_id": workflow.id,
+            "execution_id": execution_id,
+        })
+        return response
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+@app.get("/device/list", tags=["Devices"])
 @app.get("/devices", tags=["Devices"])
 async def list_devices() -> Dict[str, Any]:
     """List registered devices"""
+    await _refresh_android_devices()
     devices = device_manager.list_devices()
     device_infos = [await device.get_info() for device in devices]
 
@@ -487,6 +833,28 @@ async def get_device_info(device_id: str) -> Dict[str, Any]:
         return device_info.to_dict()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/device/status", tags=["Devices"])
+async def get_device_status() -> Dict[str, Any]:
+    """Return current Android device status using adb."""
+    await _refresh_android_devices()
+
+    for device in device_manager.list_devices():
+        if isinstance(device, AndroidDevice):
+            return await get_device_agent().get_device_status(device.device_id)
+
+    adb = get_adb_service(
+        Config.get_adb_config().adb_path,
+        Config.get_adb_config().default_timeout,
+    )
+    devices = await adb.list_devices()
+    device_id = next((device.get("serial") for device in devices if device.get("serial")), None)
+
+    if device_id is None:
+        raise HTTPException(status_code=503, detail="No Android device connected")
+
+    return await adb.get_device_status(device_id)
 
 
 # ==================== Metrics APIs ====================

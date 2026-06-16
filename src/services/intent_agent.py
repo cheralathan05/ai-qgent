@@ -23,8 +23,27 @@ class IntentAgent:
         self.entity_extractor = EntityExtractor()
         self.qwen_service = get_qwen_service()
 
+    def _build_open_app_result(self, command: str, normalized: str):
+        entities = self.entity_extractor.extract_all(normalized)
+        slots = self.entity_extractor._fill_slots(IntentType.OPEN_APP, entities)
+        target = slots.get("app") or slots.get("target")
+        if target:
+            return IntentResult(
+                intent=IntentType.OPEN_APP,
+                confidence=0.99,
+                entities=entities,
+                slots={"app": target},
+                raw_command=command,
+                normalized_command=normalized,
+            )
+        return None
+
     async def detect_intent(self, command: str) -> IntentResult:
         normalized = self.entity_extractor.normalizer.normalize(command)
+        open_app_result = self._build_open_app_result(command, normalized)
+        if open_app_result is not None:
+            return open_app_result
+
         try:
             prompt = self.PROMPT_TEMPLATE + f"\nUser command: {normalized}\n"
             payload = await self.qwen_service.generate_json(prompt)
@@ -38,6 +57,9 @@ class IntentAgent:
             slots = self.entity_extractor._fill_slots(intent_type, entities)
             if target and intent_type == IntentType.OPEN_APP and "app" not in slots:
                 slots["app"] = target
+
+            if intent_type == IntentType.OPEN_APP and slots.get("app"):
+                confidence = max(confidence, 0.99)
 
             return IntentResult(
                 intent=intent_type,
@@ -53,6 +75,8 @@ class IntentAgent:
             intent_type, confidence = self.entity_extractor.intent_classifier.classify(normalized)
             entities = self.entity_extractor.extract_all(normalized)
             slots = self.entity_extractor._fill_slots(intent_type, entities)
+            if intent_type == IntentType.OPEN_APP and slots.get("app"):
+                confidence = 0.99
             return IntentResult(
                 intent=intent_type,
                 confidence=confidence,

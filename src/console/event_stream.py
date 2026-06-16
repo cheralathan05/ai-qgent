@@ -28,6 +28,7 @@ class EventType(str, Enum):
     
     # Device
     DEVICE_CONNECTED = "device_connected"
+    DEVICE_STATUS_UPDATED = "device_status_updated"
     DEVICE_DISCONNECTED = "device_disconnected"
     DEVICE_LOCKED = "device_locked"
     DEVICE_UNLOCKED = "device_unlocked"
@@ -39,6 +40,7 @@ class EventType(str, Enum):
     STEP_COMPLETED = "step_completed"
     STEP_FAILED = "step_failed"
     ACTION_EXECUTED = "action_executed"
+    APP_OPENED = "app_opened"
     EXECUTION_COMPLETED = "execution_completed"
     EXECUTION_FAILED = "execution_failed"
     EXECUTION_CANCELLED = "execution_cancelled"

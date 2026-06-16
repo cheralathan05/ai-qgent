@@ -31,6 +31,7 @@ from devices import device_manager, WindowsDevice, AndroidDevice
 from config import Config
 from database.connection import init_database, close_database
 from services.adb_service import get_adb_service
+from services.device_agent import get_device_agent
 from services.redis_service import get_redis_service
 
 # Initialize configuration
@@ -109,11 +110,13 @@ async def lifespan(app: FastAPI):
             Config.get_adb_config().adb_path,
             Config.get_adb_config().default_timeout,
         )
+        device_agent = get_device_agent(adb_service)
         devices = await adb_service.list_devices()
         for device in devices:
             serial = device.get("serial")
             if serial:
                 device_manager.register_device(AndroidDevice(device_id=serial, adb_client=adb_service))
+        await device_agent.discover_devices()
         logger.info("Connected Android devices registered")
     except Exception as exc:
         logger.warning(f"Android device registration failed: {exc}")

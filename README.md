@@ -469,7 +469,7 @@ services:
     depends_on:
       - postgres
       - ollama
-  
+
   postgres:
     image: postgres:15
     environment:
@@ -504,5 +504,3 @@ All rights reserved - APA-OS Backend
 ## Contributors
 
 Built with production-grade reliability patterns and comprehensive observability.
-#   a i - q g e n t  
- 

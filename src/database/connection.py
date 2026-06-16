@@ -7,6 +7,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import QueuePool
 import logging
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 from config import Config
 from database.models import Base
@@ -145,6 +147,65 @@ def update_workflow(workflow_id: str, **kwargs):
         session.commit()
         
         logger.info(f"Updated workflow: {workflow_id}")
+    finally:
+        session.close()
+
+
+def upsert_device_record(
+    device_id: str,
+    device_type: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    is_active: bool = True,
+) -> None:
+    """Create or refresh a device record for discovery results."""
+    from database.models import DeviceRecord
+
+    session = get_db_session()
+    try:
+        record = session.query(DeviceRecord).filter(DeviceRecord.id == device_id).first()
+        if record is None:
+            record = DeviceRecord(id=device_id, device_type=device_type)
+            session.add(record)
+
+        record.device_type = device_type
+        record.is_active = is_active
+        record.last_seen = datetime.utcnow()
+        record.metadata_json = metadata or {}
+        session.commit()
+    finally:
+        session.close()
+
+
+def update_device_state(
+    device_id: str,
+    *,
+    is_connected: bool,
+    is_locked: bool,
+    battery_level: Optional[int] = None,
+    foreground_app: Optional[str] = None,
+    installed_apps: Optional[Dict[str, Any] | list] = None,
+    screenshot_uri: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist the latest observed device state."""
+    from database.models import DeviceState
+
+    session = get_db_session()
+    try:
+        state = DeviceState(
+            device_id=device_id,
+            is_connected=is_connected,
+            is_locked=is_locked,
+            battery_level=battery_level,
+            foreground_app=foreground_app,
+            installed_apps=installed_apps or {},
+            permissions_cache=metadata or {},
+            screenshot_uri=screenshot_uri,
+            detected_at=datetime.utcnow(),
+            created_at=datetime.utcnow(),
+        )
+        session.add(state)
+        session.commit()
     finally:
         session.close()
 

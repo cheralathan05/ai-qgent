@@ -32,6 +32,7 @@ class DeviceInfo:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "device_id": self.device_id,
+            "connected": self.status == DeviceStatus.CONNECTED,
             "status": self.status.value,
             "type": self.device_type,
             "is_locked": self.is_locked,

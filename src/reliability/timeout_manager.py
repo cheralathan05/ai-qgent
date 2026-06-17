@@ -85,6 +85,7 @@ class TimeoutManager:
             func,
             self.config.intent_detection_timeout,
             "intent_detection",
+            None,
             *args,
             **kwargs
         )
@@ -95,6 +96,7 @@ class TimeoutManager:
             func,
             self.config.planning_timeout,
             "planning",
+            None,
             *args,
             **kwargs
         )
@@ -105,6 +107,7 @@ class TimeoutManager:
             func,
             self.config.execution_timeout,
             "execution",
+            None,
             *args,
             **kwargs
         )
@@ -115,6 +118,7 @@ class TimeoutManager:
             func,
             self.config.verification_timeout,
             "verification",
+            None,
             *args,
             **kwargs
         )
@@ -125,6 +129,7 @@ class TimeoutManager:
             func,
             self.config.agent_call_timeout,
             "agent_call",
+            None,
             *args,
             **kwargs
         )
@@ -135,6 +140,7 @@ class TimeoutManager:
             func,
             self.config.adb_call_timeout,
             "adb_call",
+            None,
             *args,
             **kwargs
         )

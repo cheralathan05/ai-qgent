@@ -164,13 +164,22 @@ class AndroidDevice(Device):
         activity = self.APP_MAIN_ACTIVITY.get(package_name)
 
         try:
+            launch_error = None
             if activity:
-                await self.adb.start_activity(self.device_id, package_name, activity)
-            else:
+                try:
+                    await self.adb.start_activity(self.device_id, package_name, activity)
+                except Exception as exc:
+                    launch_error = exc
+            if not activity or launch_error is not None:
                 await self.adb.open_app(self.device_id, package_name)
 
             await asyncio.sleep(2)
-            return {"status": "success", "app": package_name}
+            foreground_app = await self.get_foreground_app()
+            return {
+                "status": "success",
+                "app": package_name,
+                "foreground_app": foreground_app,
+            }
 
         except Exception as exc:
             return {"status": "error", "message": str(exc)}

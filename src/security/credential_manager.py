@@ -70,8 +70,15 @@ class SecretManager:
             vault_service: External vault service (AWS Secrets, Vault, etc.)
         """
         self.vault_service = vault_service
-        self.encryption_key = self._get_encryption_key()
-        self.cipher = Fernet(self.encryption_key)
+        self.encryption_key = None
+        self.cipher = None
+
+    def _ensure_cipher(self) -> Fernet:
+        if self.cipher is None:
+            self.encryption_key = self._get_encryption_key()
+            self.cipher = Fernet(self.encryption_key)
+
+        return self.cipher
     
     def _get_encryption_key(self) -> bytes:
         """Get or generate encryption key"""
@@ -150,7 +157,7 @@ class SecretManager:
         Temporarily encrypt data for in-memory storage
         This should only be used for temporary storage during execution
         """
-        encrypted = self.cipher.encrypt(data.encode())
+        encrypted = self._ensure_cipher().encrypt(data.encode())
         return encrypted.decode()
     
     def decrypt_temporary(self, encrypted_data: str) -> str:
@@ -158,7 +165,7 @@ class SecretManager:
         Decrypt temporarily stored data
         """
         try:
-            decrypted = self.cipher.decrypt(encrypted_data.encode())
+            decrypted = self._ensure_cipher().decrypt(encrypted_data.encode())
             return decrypted.decode()
         except Exception as e:
             logger.error(f"Error decrypting data: {e}")

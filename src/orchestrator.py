@@ -335,7 +335,15 @@ class WorkflowOrchestrator:
                 intent_result,
             )
             
-            all_verified = all(v.passed for v in verification_results)
+            def _is_verified(result) -> bool:
+                if hasattr(result, "passed"):
+                    return bool(result.passed)
+                if isinstance(result, dict):
+                    status = result.get("status")
+                    return status == "success" or result.get("passed") is True
+                return bool(result)
+
+            all_verified = all(_is_verified(v) for v in verification_results)
             
             if all_verified:
                 await self.event_manager.emit(
@@ -349,7 +357,7 @@ class WorkflowOrchestrator:
                 await self.event_manager.emit(
                     workflow_id=workflow_id,
                     event_type=EventType.VERIFICATION_FAILED,
-                    payload={"failed": sum(1 for v in verification_results if not v.passed)},
+                    payload={"failed": sum(1 for v in verification_results if not _is_verified(v))},
                     source="verification_engine",
                     severity=EventSeverity.ERROR,
                 )

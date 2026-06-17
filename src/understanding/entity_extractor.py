@@ -50,6 +50,9 @@ class IntentResult:
 
 class EntityExtractor:
     """Extracts entities from user commands"""
+
+    def __init__(self):
+        self.normalizer = CommandNormalizer()
     
     # Common app name variations
     APP_ALIASES = {
@@ -163,6 +166,30 @@ class EntityExtractor:
                 entities.append(entity)
         
         return entities
+
+    def _fill_slots(self, intent: IntentType, entities: List[Entity]) -> Dict[str, str]:
+        """Fill intent slots from extracted entities."""
+        slots: Dict[str, str] = {}
+
+        if intent == IntentType.OPEN_APP:
+            app = next((entity for entity in entities if entity.type == "app"), None)
+            if app:
+                slots["app"] = app.value
+
+        elif intent == IntentType.SEND_MESSAGE:
+            contact = next((entity for entity in entities if entity.type == "contact"), None)
+            text = next((entity for entity in entities if entity.type == "text"), None)
+            if contact:
+                slots["recipient"] = contact.value
+            if text:
+                slots["message"] = text.value
+
+        elif intent == IntentType.MAKE_CALL:
+            contact = next((entity for entity in entities if entity.type == "contact"), None)
+            if contact:
+                slots["recipient"] = contact.value
+
+        return slots
 
 
 class IntentClassifier:

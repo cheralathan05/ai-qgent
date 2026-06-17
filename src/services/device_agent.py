@@ -25,42 +25,59 @@ class DeviceAgent:
 
     async def discover_devices(self) -> List[AndroidDevice]:
         discovered: List[AndroidDevice] = []
-        for device_metadata in await self.adb.discover_devices():
-            device_id = device_metadata["device_id"]
-            device = self.device_manager.get_device(device_id)
-            if not isinstance(device, AndroidDevice):
-                device = AndroidDevice(device_id=device_id, adb_client=self.adb)
-                self.device_manager.register_device(device)
-
-            info = await device.get_info()
-            upsert_device_record(device_id, "android", metadata=info.to_dict(), is_active=True)
-            update_device_state(
-                device_id,
-                is_connected=True,
-                is_locked=info.is_locked,
-                battery_level=info.battery_level,
-                foreground_app=info.foreground_app,
-                installed_apps=sorted(info.installed_apps),
-                metadata=info.to_dict(),
+        if self.adb is None:
+            self.adb = get_adb_service(
+                Config.get_adb_config().adb_path,
+                Config.get_adb_config().default_timeout,
             )
 
-            await self.event_manager.emit(
-                workflow_id="system",
-                event_type=EventType.DEVICE_CONNECTED,
-                payload=info.to_dict(),
-                source="device_agent",
-                severity=EventSeverity.INFO,
-                device_id=device_id,
-            )
-            await self.event_manager.emit(
-                workflow_id="system",
-                event_type=EventType.DEVICE_STATUS_UPDATED,
-                payload=info.to_dict(),
-                source="device_agent",
-                severity=EventSeverity.INFO,
-                device_id=device_id,
-            )
-            discovered.append(device)
+        try:
+            device_metadata_list = await self.adb.discover_devices()
+        except Exception as exc:
+            logger.warning(f"Skipping Android device discovery because ADB is unavailable: {exc}")
+            return discovered
+
+        for device_metadata in device_metadata_list:
+            try:
+                device_id = device_metadata["device_id"]
+                device = self.device_manager.get_device(device_id)
+                if not isinstance(device, AndroidDevice):
+                    device = AndroidDevice(device_id=device_id, adb_client=self.adb)
+                    self.device_manager.register_device(device)
+                else:
+                    device.adb = self.adb
+
+                info = await device.get_info()
+                upsert_device_record(device_id, "android", metadata=info.to_dict(), is_active=True)
+                update_device_state(
+                    device_id,
+                    is_connected=True,
+                    is_locked=info.is_locked,
+                    battery_level=info.battery_level,
+                    foreground_app=info.foreground_app,
+                    installed_apps=sorted(info.installed_apps),
+                    metadata=info.to_dict(),
+                )
+
+                await self.event_manager.emit(
+                    workflow_id="system",
+                    event_type=EventType.DEVICE_CONNECTED,
+                    payload=info.to_dict(),
+                    source="device_agent",
+                    severity=EventSeverity.INFO,
+                    device_id=device_id,
+                )
+                await self.event_manager.emit(
+                    workflow_id="system",
+                    event_type=EventType.DEVICE_STATUS_UPDATED,
+                    payload=info.to_dict(),
+                    source="device_agent",
+                    severity=EventSeverity.INFO,
+                    device_id=device_id,
+                )
+                discovered.append(device)
+            except Exception as exc:
+                logger.warning(f"Skipping Android device discovery entry due to error: {exc}")
 
         return discovered
 
@@ -141,6 +158,6 @@ def get_device_agent(adb_client=None) -> DeviceAgent:
     global device_agent
     if device_agent is None:
         device_agent = DeviceAgent(adb_client=adb_client)
-    elif adb_client is not None and device_agent.adb is None:
+    elif adb_client is not None:
         device_agent.adb = adb_client
     return device_agent

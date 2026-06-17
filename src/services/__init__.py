@@ -10,6 +10,9 @@ from .voice_service import get_voice_service
 from .planner_agent import get_planner_agent
 from .workflow_engine import get_workflow_engine
 from .device_agent import get_device_agent
+from .device_selector import get_device_selector
+from .conversation_manager import get_conversation_manager
+from .voice_session import get_voice_session_store
 
 __all__ = [
     "get_adb_service",
@@ -22,4 +25,7 @@ __all__ = [
     "get_planner_agent",
     "get_workflow_engine",
     "get_device_agent",
+    "get_device_selector",
+    "get_conversation_manager",
+    "get_voice_session_store",
 ]

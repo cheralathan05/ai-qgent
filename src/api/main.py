@@ -21,11 +21,13 @@ from database.models import (
 )
 from console.event_stream import EventType, EventSeverity, get_event_manager, EventQueueSubscriber
 from audit.audit_manager import get_audit_manager
-from devices import device_manager, AndroidDevice, DeviceStatus
+from devices import device_manager, AndroidDevice, DeviceStatus, WindowsDevice
 from services.workflow_engine import get_workflow_engine
 from services.intent_agent import get_intent_agent
 from services.planner_agent import get_planner_agent
 from services.voice_service import get_voice_service
+from services.device_selector import get_device_selector
+from services.conversation_manager import get_conversation_manager
 from services.adb_service import get_adb_service
 from services.device_agent import get_device_agent
 from services.redis_service import get_redis_service
@@ -57,13 +59,15 @@ class AuditLogResponse(dict):
 class CreateWorkflowRequest(BaseModel):
     user_id: str
     command: str
-    device_id: Optional[str] = "laptop"
+    device_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class CommandRequest(BaseModel):
     command: str
     device_id: Optional[str] = None
     user_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class ExecuteRequest(BaseModel):
@@ -87,24 +91,18 @@ def _extract_target(intent_result) -> Optional[str]:
 DEFAULT_USER_ID = "phase1-user"
 
 
-def _resolve_device_id(preferred_device_id: Optional[str] = None) -> str:
-    """Pick the best available execution target."""
-    if preferred_device_id and device_manager.get_device(preferred_device_id) is not None:
-        return preferred_device_id
-
-    devices = device_manager.list_devices()
-    android_devices = [device for device in devices if isinstance(device, AndroidDevice)]
-
-    if android_devices:
-        return android_devices[0].device_id
-
-    if device_manager.get_device("laptop") is not None:
-        return "laptop"
-
-    if devices:
-        return devices[0].device_id
-
-    return preferred_device_id or "laptop"
+def _resolve_device_selection(
+    command: str,
+    *,
+    preferred_device_id: Optional[str] = None,
+    session_device_id: Optional[str] = None,
+):
+    """Pick the best available execution target with Android-first routing."""
+    return get_device_selector().select_device(
+        command,
+        preferred_device_id=preferred_device_id,
+        session_device_id=session_device_id,
+    )
 
 
 def _build_simple_response(result: Dict[str, Any], command: str, transcript: Optional[str] = None) -> Dict[str, Any]:
@@ -147,7 +145,7 @@ async def _execute_user_command(
     """Run the shared command pipeline with sensible phase 1 defaults."""
     orchestrator = get_workflow_engine(session=session)
     resolved_user_id = user_id or DEFAULT_USER_ID
-    resolved_device_id = _resolve_device_id(device_id)
+    resolved_device_id = device_id or "laptop"
 
     return await orchestrator.execute_command(
         user_id=resolved_user_id,
@@ -162,6 +160,23 @@ async def _refresh_android_devices() -> None:
     """Discover connected Android devices and register them in memory and the database."""
     device_agent = get_device_agent(get_adb_service(Config.get_adb_config().adb_path, Config.get_adb_config().default_timeout))
     await device_agent.discover_devices()
+
+
+async def _ensure_laptop_device() -> None:
+    """Register the local Windows device if it is missing."""
+    if device_manager.get_device("laptop") is None:
+        device_manager.register_device(
+            WindowsDevice(
+                device_id="laptop",
+                windows_user=os.getenv("USERNAME", "local"),
+            )
+        )
+
+
+async def bootstrap_phase1_environment() -> None:
+    """Ensure the phase 1 device registry is ready for execution."""
+    await _ensure_laptop_device()
+    await _refresh_android_devices()
 
 
 async def _create_workflow_record(
@@ -610,20 +625,66 @@ async def create_workflow(
 
     await _refresh_android_devices()
 
-    resolved_device_id = _resolve_device_id(request.device_id)
+    conversation_manager = get_conversation_manager()
+    conversation_result = conversation_manager.process_input(
+        user_id=request.user_id,
+        text=request.command,
+        session_id=request.session_id,
+    )
+
+    if not conversation_result.should_execute:
+        return {
+            "workflow_id": None,
+            "success": True,
+            "status": "completed",
+            "message": conversation_result.assistant_text,
+            "assistant_text": conversation_result.assistant_text,
+            "conversation_mode": True,
+            "session": conversation_result.session.to_dict(),
+            "device_selection": None,
+        }
+
+    selection = _resolve_device_selection(
+        conversation_result.command_text,
+        preferred_device_id=request.device_id,
+        session_device_id=conversation_result.session.current_device_id,
+    )
+
+    if not selection.available:
+        assistant_text = conversation_manager.build_error_reply(error="", selection_available=False)
+        conversation_manager.finalize_session(
+            session=conversation_result.session,
+            command=conversation_result.command_text,
+            intent="unknown",
+            target=None,
+            device_id=None,
+            device_type="android",
+            device_label="phone",
+            assistant_text=assistant_text,
+        )
+        return {
+            "workflow_id": None,
+            "success": False,
+            "status": "failed",
+            "message": assistant_text,
+            "assistant_text": assistant_text,
+            "conversation_mode": True,
+            "session": conversation_result.session.to_dict(),
+            "device_selection": selection.to_dict(),
+        }
 
     workflow_id = await create_workflow(
         user_id=request.user_id,
-        command=request.command,
+        command=conversation_result.command_text,
         intent="pending",
-        device_id=resolved_device_id,
+        device_id=selection.device_id or request.device_id or "laptop",
     )
 
     result = await _execute_user_command(
         session=session,
-        command=request.command,
+        command=conversation_result.command_text,
         user_id=request.user_id,
-        device_id=resolved_device_id,
+        device_id=selection.device_id,
         voice_input=request.voice_input,
         workflow_id=workflow_id,
     )
@@ -641,6 +702,24 @@ async def create_workflow(
     response = {"workflow_id": workflow_id, **result}
     if execution_id is not None:
         response["execution_id"] = execution_id
+    response["device_selection"] = selection.to_dict()
+    response["assistant_text"] = conversation_manager.build_completion_reply(
+        command=conversation_result.command_text,
+        device_label=selection.display_name,
+        selection_available=selection.available,
+        result=result,
+        continuation=conversation_result.continuation,
+    )
+    response["session"] = conversation_manager.finalize_session(
+        session=conversation_result.session,
+        command=conversation_result.command_text,
+        intent="unknown",
+        target=None,
+        device_id=selection.device_id,
+        device_type=selection.device_type,
+        device_label=selection.display_name,
+        assistant_text=response["assistant_text"],
+    ).to_dict()
     return response
 
 
@@ -650,31 +729,75 @@ async def execute_command(
     session=Depends(get_session),
 ) -> Dict[str, Any]:
     """Parse a command, build a workflow, execute it, and return the result."""
-    await _refresh_android_devices()
+    await bootstrap_phase1_environment()
+
+    conversation_manager = get_conversation_manager()
+    conversation_result = conversation_manager.process_input(
+        user_id=request.user_id or DEFAULT_USER_ID,
+        text=request.command,
+        session_id=request.session_id,
+    )
+
+    if not conversation_result.should_execute:
+        return {
+            "success": True,
+            "status": "completed",
+            "message": conversation_result.assistant_text,
+            "assistant_text": conversation_result.assistant_text,
+            "conversation_mode": True,
+            "session": conversation_result.session.to_dict(),
+            "device_selection": None,
+        }
 
     intent_agent = get_intent_agent()
     planner_agent = get_planner_agent()
 
-    intent_result = await intent_agent.detect_intent(request.command)
+    intent_result = await intent_agent.detect_intent(conversation_result.command_text)
     plan_steps = planner_agent.plan(intent_result)
     target = _extract_target(intent_result)
     resolved_user_id = request.user_id or DEFAULT_USER_ID
-    resolved_device_id = _resolve_device_id(request.device_id)
+    selection = _resolve_device_selection(
+        conversation_result.command_text,
+        preferred_device_id=request.device_id,
+        session_device_id=conversation_result.session.current_device_id,
+    )
+
+    if not selection.available:
+        assistant_text = conversation_manager.build_error_reply(error="", selection_available=False)
+        conversation_manager.finalize_session(
+            session=conversation_result.session,
+            command=conversation_result.command_text,
+            intent=intent_result.intent.value,
+            target=target,
+            device_id=None,
+            device_type="android",
+            device_label="phone",
+            assistant_text=assistant_text,
+        )
+        return {
+            "success": False,
+            "status": "failed",
+            "message": assistant_text,
+            "assistant_text": assistant_text,
+            "conversation_mode": True,
+            "session": conversation_result.session.to_dict(),
+            "device_selection": selection.to_dict(),
+        }
 
     workflow = await _create_workflow_record(
         session=session,
         user_id=resolved_user_id,
-        command=request.command,
+        command=conversation_result.command_text,
         intent=intent_result.intent.value,
-        device_id=resolved_device_id,
+        device_id=selection.device_id or request.device_id or "laptop",
         plan_json=plan_steps,
     )
 
     result = await _execute_user_command(
         session=session,
-        command=request.command,
+        command=conversation_result.command_text,
         user_id=resolved_user_id,
-        device_id=resolved_device_id,
+        device_id=selection.device_id,
         workflow_id=workflow.id,
     )
 
@@ -684,15 +807,33 @@ async def execute_command(
         execution_result=result,
     )
 
-    return {
+    response = _build_simple_response(result, conversation_result.command_text)
+    response.update({
         "workflow_id": workflow.id,
         "intent": intent_result.intent.value,
         "target": target,
         "execution_id": execution_id,
-        "status": result.get("status", "completed" if result.get("success") else "failed"),
-        "success": bool(result.get("success")),
         "result": result,
-    }
+        "device_selection": selection.to_dict(),
+        "assistant_text": conversation_manager.build_completion_reply(
+            command=conversation_result.command_text,
+            device_label=selection.display_name,
+            selection_available=selection.available,
+            result=result,
+            continuation=conversation_result.continuation,
+        ),
+    })
+    response["session"] = conversation_manager.finalize_session(
+        session=conversation_result.session,
+        command=conversation_result.command_text,
+        intent=intent_result.intent.value,
+        target=target,
+        device_id=selection.device_id,
+        device_type=selection.device_type,
+        device_label=selection.display_name,
+        assistant_text=response["assistant_text"],
+    ).to_dict()
+    return response
 
 
 @app.post("/execute", tags=["Commands"])
@@ -731,13 +872,14 @@ async def execute_voice_command(
     audio_file: UploadFile = File(...),
     device_id: Optional[str] = Form(None),
     user_id: Optional[str] = Form(None),
+    session_id: Optional[str] = Form(None),
     session=Depends(get_session),
 ) -> Dict[str, Any]:
     """Transcribe audio, create a workflow, and execute the resulting command."""
     temp_path = None
 
     try:
-        await _refresh_android_devices()
+        await bootstrap_phase1_environment()
 
         suffix = os.path.splitext(audio_file.filename or "audio.wav")[1] or ".wav"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
@@ -748,28 +890,74 @@ async def execute_voice_command(
         if not transcript:
             raise HTTPException(status_code=400, detail="Unable to transcribe audio")
 
+        conversation_manager = get_conversation_manager()
+        conversation_result = conversation_manager.process_input(
+            user_id=user_id or DEFAULT_USER_ID,
+            text=transcript,
+            session_id=session_id,
+        )
+
+        if not conversation_result.should_execute:
+            return {
+                "success": True,
+                "status": "completed",
+                "message": conversation_result.assistant_text,
+                "assistant_text": conversation_result.assistant_text,
+                "transcript": transcript,
+                "conversation_mode": True,
+                "session": conversation_result.session.to_dict(),
+                "device_selection": None,
+            }
+
         intent_agent = get_intent_agent()
         planner_agent = get_planner_agent()
-        intent_result = await intent_agent.detect_intent(transcript)
+        intent_result = await intent_agent.detect_intent(conversation_result.command_text)
         plan_steps = planner_agent.plan(intent_result)
         target = _extract_target(intent_result)
         resolved_user_id = user_id or DEFAULT_USER_ID
-        resolved_device_id = _resolve_device_id(device_id)
+        selection = _resolve_device_selection(
+            conversation_result.command_text,
+            preferred_device_id=device_id,
+            session_device_id=conversation_result.session.current_device_id,
+        )
+
+        if not selection.available:
+            assistant_text = conversation_manager.build_error_reply(error="", selection_available=False)
+            conversation_manager.finalize_session(
+                session=conversation_result.session,
+                command=conversation_result.command_text,
+                intent=intent_result.intent.value,
+                target=target,
+                device_id=None,
+                device_type="android",
+                device_label="phone",
+                assistant_text=assistant_text,
+            )
+            return {
+                "success": False,
+                "status": "failed",
+                "message": assistant_text,
+                "assistant_text": assistant_text,
+                "transcript": transcript,
+                "conversation_mode": True,
+                "session": conversation_result.session.to_dict(),
+                "device_selection": selection.to_dict(),
+            }
 
         workflow = await _create_workflow_record(
             session=session,
             user_id=resolved_user_id,
-            command=transcript,
+            command=conversation_result.command_text,
             intent=intent_result.intent.value,
-            device_id=resolved_device_id,
+            device_id=selection.device_id or device_id or "laptop",
             plan_json=plan_steps,
         )
 
         result = await _execute_user_command(
             session=session,
-            command=transcript,
+            command=conversation_result.command_text,
             user_id=resolved_user_id,
-            device_id=resolved_device_id,
+            device_id=selection.device_id,
             voice_input=True,
             workflow_id=workflow.id,
         )
@@ -780,11 +968,30 @@ async def execute_voice_command(
             execution_result=result,
         )
 
-        response = _build_simple_response(result, transcript, transcript=transcript)
+        response = _build_simple_response(result, conversation_result.command_text, transcript=transcript)
         response.update({
             "workflow_id": workflow.id,
             "execution_id": execution_id,
+            "result": result,
+            "device_selection": selection.to_dict(),
+            "assistant_text": conversation_manager.build_completion_reply(
+                command=conversation_result.command_text,
+                device_label=selection.display_name,
+                selection_available=selection.available,
+                result=result,
+                continuation=conversation_result.continuation,
+            ),
         })
+        response["session"] = conversation_manager.finalize_session(
+            session=conversation_result.session,
+            command=conversation_result.command_text,
+            intent=intent_result.intent.value,
+            target=target,
+            device_id=selection.device_id,
+            device_type=selection.device_type,
+            device_label=selection.display_name,
+            assistant_text=response["assistant_text"],
+        ).to_dict()
         return response
 
     finally:
@@ -795,11 +1002,16 @@ async def execute_voice_command(
                 pass
 
 
+@app.on_event("startup")
+async def _startup_bootstrap_phase1() -> None:
+    await bootstrap_phase1_environment()
+
+
 @app.get("/device/list", tags=["Devices"])
 @app.get("/devices", tags=["Devices"])
 async def list_devices() -> Dict[str, Any]:
     """List registered devices"""
-    await _refresh_android_devices()
+    await bootstrap_phase1_environment()
     devices = device_manager.list_devices()
     device_infos = [await device.get_info() for device in devices]
 
@@ -838,7 +1050,7 @@ async def get_device_info(device_id: str) -> Dict[str, Any]:
 @app.get("/device/status", tags=["Devices"])
 async def get_device_status() -> Dict[str, Any]:
     """Return current Android device status using adb."""
-    await _refresh_android_devices()
+    await bootstrap_phase1_environment()
 
     for device in device_manager.list_devices():
         if isinstance(device, AndroidDevice):

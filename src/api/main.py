@@ -837,7 +837,6 @@ async def _startup_bootstrap_phase1() -> None:
     adb_path = find_adb_binary()
     logger.info(f"ADB binary resolved to: {adb_path}")
     try:
-        import subprocess
         version = subprocess.run([adb_path, "version"], capture_output=True, text=True, timeout=5)
         logger.info(f"ADB version: {version.stdout.strip() or version.stderr.strip()}")
     except Exception as exc:

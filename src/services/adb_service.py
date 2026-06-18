@@ -2,11 +2,63 @@
 
 import asyncio
 import logging
+import os
 import re
 import shutil
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def find_adb_binary() -> str:
+    """Locate the ADB binary on this system.
+
+    Checks (in order):
+      1. `ADB_PATH` environment variable
+      2. `adb` / `adb.exe` in PATH
+      3. ANDROID_HOME/platform-tools/adb.exe
+      4. ANDROID_SDK_ROOT/platform-tools/adb.exe
+      5. LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe
+      6. C:/platform-tools/adb.exe
+      7. C:/Android/platform-tools/adb.exe
+    """
+    # 1. Explicit env var
+    env_path = os.environ.get("ADB_PATH", "").strip().strip("\"'")
+    if env_path:
+        resolved = shutil.which(env_path)
+        if resolved:
+            return resolved
+        if os.path.isfile(env_path):
+            return env_path
+
+    # 2. PATH
+    resolved = shutil.which("adb")
+    if resolved:
+        return resolved
+
+    # 3-7. Common Windows SDK locations
+    candidates = []
+    for var in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        root = os.environ.get(var, "")
+        if root:
+            candidates.append(os.path.join(root, "platform-tools", "adb.exe"))
+
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    if local_appdata:
+        candidates.append(os.path.join(local_appdata, "Android", "Sdk", "platform-tools", "adb.exe"))
+
+    candidates.extend([
+        r"C:\platform-tools\adb.exe",
+        r"C:\Android\platform-tools\adb.exe",
+    ])
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    # Final fallback – let subprocess fail with a clear error later
+    logger.warning("ADB binary not found – will fall back to 'adb' (may fail if not in PATH)")
+    return "adb"
 
 
 class ADBCommandError(RuntimeError):
@@ -25,8 +77,8 @@ class ADBService:
         "gmail": "com.google.android.gm",
     }
 
-    def __init__(self, adb_path: str = "adb", default_timeout: int = 30):
-        self.adb_path = adb_path
+    def __init__(self, adb_path: Optional[str] = None, default_timeout: int = 30):
+        self.adb_path = adb_path or find_adb_binary()
         self.default_timeout = default_timeout
 
     async def _run(self, args: List[str], timeout: Optional[int] = None) -> str:
@@ -256,7 +308,7 @@ class ADBService:
 adb_service = None
 
 
-def get_adb_service(adb_path: str = "adb", default_timeout: int = 30) -> ADBService:
+def get_adb_service(adb_path: Optional[str] = None, default_timeout: int = 30) -> ADBService:
     global adb_service
     if adb_service is None:
         adb_service = ADBService(adb_path, default_timeout)

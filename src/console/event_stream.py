@@ -18,21 +18,25 @@ logger = logging.getLogger(__name__)
 
 class EventType(str, Enum):
     """All possible event types in the system"""
+    # Command
+    COMMAND_RECEIVED = "command_received"
+    
     # Intent Detection
     INTENT_DETECTED = "intent_detected"
     ENTITIES_EXTRACTED = "entities_extracted"
     
-    # Planning
-    PLAN_CREATED = "plan_created"
-    PLAN_UPDATED = "plan_updated"
-    
     # Device
+    DEVICE_SELECTED = "device_selected"
     DEVICE_CONNECTED = "device_connected"
     DEVICE_STATUS_UPDATED = "device_status_updated"
     DEVICE_DISCONNECTED = "device_disconnected"
     DEVICE_LOCKED = "device_locked"
     DEVICE_UNLOCKED = "device_unlocked"
     PHONE_STATE_VERIFIED = "phone_state_verified"
+    
+    # Planning
+    PLAN_CREATED = "plan_created"
+    PLAN_UPDATED = "plan_updated"
     
     # Execution
     EXECUTION_STARTED = "execution_started"
@@ -41,6 +45,8 @@ class EventType(str, Enum):
     STEP_FAILED = "step_failed"
     ACTION_EXECUTED = "action_executed"
     APP_OPENED = "app_opened"
+    CHAT_OPENED = "chat_opened"
+    MESSAGE_SENT = "message_sent"
     EXECUTION_COMPLETED = "execution_completed"
     EXECUTION_FAILED = "execution_failed"
     EXECUTION_CANCELLED = "execution_cancelled"
@@ -68,6 +74,10 @@ class EventType(str, Enum):
     RECOVERY_SUCCEEDED = "recovery_succeeded"
     RECOVERY_FAILED = "recovery_failed"
     
+    # Screen
+    SCREEN_CHANGED = "screen_changed"
+    SCREEN_DETECTED = "screen_detected"
+    
     # System
     SYSTEM_ALERT = "system_alert"
     SYSTEM_WARNING = "system_warning"
@@ -81,6 +91,17 @@ class EventSeverity(str, Enum):
     WARNING = "warning"
     ERROR = "error"
     CRITICAL = "critical"
+
+
+class WorkflowState(str, Enum):
+    """Workflow orchestration states"""
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_APPROVAL = "waiting_approval"
+    RETRYING = "retrying"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -119,7 +140,9 @@ class WorkflowEvent:
     def _get_icon(self) -> str:
         """Get console icon based on event type"""
         icons = {
+            EventType.COMMAND_RECEIVED: "🎤",
             EventType.INTENT_DETECTED: "🎤",
+            EventType.DEVICE_SELECTED: "📱",
             EventType.PLAN_CREATED: "📋",
             EventType.DEVICE_CONNECTED: "📱",
             EventType.EXECUTION_STARTED: "▶️",
@@ -133,6 +156,10 @@ class WorkflowEvent:
             EventType.APPROVAL_REJECTED: "👎",
             EventType.FAILURE_DETECTED: "⚠️",
             EventType.EXECUTION_FAILED: "💥",
+            EventType.CHAT_OPENED: "💬",
+            EventType.MESSAGE_SENT: "✉️",
+            EventType.SCREEN_CHANGED: "📺",
+            EventType.SCREEN_DETECTED: "🔍",
         }
         return icons.get(self.event_type, "•")
 

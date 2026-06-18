@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Any, Optional, Set
 
 from ..device import Device, DeviceInfo, DeviceStatus
+from services.adb_service import get_adb_service
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class AndroidDevice(Device):
 
     def __init__(self, device_id: str, adb_client=None, **kwargs):
         super().__init__(device_id)
-        self.adb = adb_client
+        self.adb = adb_client or get_adb_service()
 
     def _resolve_package_name(self, app_name: str) -> str:
         return self.APP_PACKAGE_MAP.get(app_name.lower(), app_name)

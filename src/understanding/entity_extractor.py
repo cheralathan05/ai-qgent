@@ -53,6 +53,7 @@ class EntityExtractor:
 
     def __init__(self):
         self.normalizer = CommandNormalizer()
+        self.intent_classifier = IntentClassifier()
     
     # Common app name variations
     APP_ALIASES = {

@@ -56,6 +56,7 @@ from console.event_stream import (
     DatabaseEventSubscriber,
     WebSocketEventSubscriber,
 )
+from plugin_framework.builtin_plugins import register_builtin_plugins
 
 ws_event_subscriber = WebSocketEventSubscriber()
 
@@ -111,6 +112,13 @@ async def lifespan(app: FastAPI):
         logger.info("Connected Android devices registered")
     except Exception as exc:
         logger.warning(f"Android device registration failed: {exc}")
+
+    # Register built-in plugins
+    try:
+        register_builtin_plugins()
+        logger.info("Built-in plugins registered")
+    except Exception as e:
+        logger.warning(f"Plugin registration skipped: {e}")
 
     logger.info("All services initialized")
     

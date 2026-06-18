@@ -145,10 +145,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Import and include API routes
-from api.main import app as api_app
-
-# Include all API routers
+# Include all API routers directly from your consolidated api/main app surface
 for route in api_app.routes:
     app.routes.append(route)
 
@@ -183,7 +180,7 @@ async def websocket_events(websocket: WebSocket, client_id: str):
         logger.info(f"WebSocket client disconnected: {client_id}")
 
 
-# Health check endpoint (already in api.main, but ensure it's here)
+# Health check endpoint
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -211,9 +208,7 @@ def run_server():
 
 if __name__ == "__main__":
     try:
-        # When invoked directly (python main.py) disable uvicorn auto-reload
-        # to avoid filesystem watch loops on some Windows setups.
-        # Attempt to bind to configured port; if it's in use, try the next few ports.
+        # Disable uvicorn auto-reload when invoked directly to avoid filesystem loops on Windows
         start_port = config.API_PORT
         max_tries = 5
         import socket
@@ -233,7 +228,7 @@ if __name__ == "__main__":
                     raise
                 continue
 
-            # Port looks free; start server on this port
+            # Port is free; start server on this port
             uvicorn.run(
                 "main:app",
                 host=config.API_HOST,

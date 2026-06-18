@@ -73,8 +73,22 @@ class ADBService:
         "instagram": "com.instagram.android",
         "whatsapp": "com.whatsapp",
         "youtube": "com.google.android.youtube",
-        "maps": "com.google.android.apps.maps",
+        "settings": "com.android.settings",
         "gmail": "com.google.android.gm",
+        "maps": "com.google.android.apps.maps",
+        "camera": "com.android.camera",
+        "calculator": "com.android.calculator2",
+        "phone": "com.android.dialer",
+        "dialer": "com.android.dialer",
+        "play store": "com.android.vending",
+        "spotify": "com.spotify.music",
+        "twitter": "com.twitter.android",
+        "facebook": "com.facebook.katana",
+        "messages": "com.google.android.apps.messaging",
+        "files": "com.android.documentsui",
+        "contacts": "com.android.contacts",
+        "clock": "com.android.deskclock",
+        "calendar": "com.android.calendar",
     }
 
     def __init__(self, adb_path: Optional[str] = None, default_timeout: int = 30):
@@ -157,7 +171,36 @@ class ADBService:
         return await self.shell(device_id, f"monkey -p {package_name} 1")
 
     async def open_app(self, device_id: str, app_name: str) -> str:
-        return await self.monkey_launch(device_id, self.resolve_package_name(app_name))
+        pkg = self.resolve_package_name(app_name)
+        return await self.launch_package(device_id, pkg)
+
+    async def launch_package(self, device_id: str, package: str) -> str:
+        """Open an app by package name, trying monkey then am start as fallback."""
+        try:
+            return await self.monkey_launch(device_id, package)
+        except Exception:
+            return await self.shell(
+                device_id,
+                f"am start -p {package} -a android.intent.action.MAIN -c android.intent.category.LAUNCHER",
+            )
+
+    async def open_url(self, device_id: str, url: str) -> str:
+        """Open a URL in the default browser."""
+        return await self.shell(
+            device_id,
+            f'am start -a android.intent.action.VIEW -d "{url}"',
+        )
+
+    async def dial_number(self, device_id: str, number: str) -> str:
+        """Open dialer with a number pre-filled."""
+        return await self.shell(
+            device_id,
+            f'am start -a android.intent.action.DIAL -d "tel:{number}"',
+        )
+
+    async def press_key(self, device_id: str, keycode: int) -> str:
+        """Send a keyevent to the device."""
+        return await self.shell(device_id, f"input keyevent {keycode}")
 
     async def close_app(self, device_id: str, app_name: str) -> str:
         return await self.shell(device_id, f"am force-stop {self.resolve_package_name(app_name)}")

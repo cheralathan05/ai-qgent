@@ -145,6 +145,52 @@ def _build_simple_response(result: Dict[str, Any], command: str, transcript: Opt
     return payload
 
 
+PACKAGE_MAP = {
+    "instagram": "com.instagram.android",
+    "whatsapp": "com.whatsapp",
+    "chrome": "com.android.chrome",
+    "youtube": "com.google.android.youtube",
+    "settings": "com.android.settings",
+    "gmail": "com.google.android.gm",
+    "maps": "com.google.android.apps.maps",
+    "camera": "com.android.camera",
+    "calculator": "com.android.calculator2",
+    "phone": "com.android.dialer",
+    "play store": "com.android.vending",
+    "spotify": "com.spotify.music",
+    "twitter": "com.twitter.android",
+    "facebook": "com.facebook.katana",
+    "messages": "com.google.android.apps.messaging",
+    "files": "com.android.documentsui",
+}
+
+
+async def _resolve_adb_device() -> Optional[str]:
+    """Return the serial of the first connected Android device, or None."""
+    try:
+        adb = get_adb_service(find_adb_binary())
+        devices = await adb.list_devices()
+        if devices:
+            return devices[0]["serial"]
+    except Exception as exc:
+        logger.warning(f"ADB device resolution failed: {exc}")
+    return None
+
+
+async def _adb_action(adb, device_id, method, *args) -> Dict[str, Any]:
+    """Run an ADB method with (device_id, *args) and return a uniform result."""
+    try:
+        method_fn = getattr(adb, method)
+        if asyncio.iscoroutinefunction(method_fn):
+            output = await method_fn(device_id, *args)
+        else:
+            output = method_fn(device_id, *args)
+        return {"success": True, "status": "completed", "adb_output": str(output) if output is not None else ""}
+    except Exception as exc:
+        logger.warning(f"ADB {method} failed: {exc}")
+        return {"success": False, "status": "error", "error": str(exc)}
+
+
 async def _execute_user_command(
     *,
     session,
@@ -154,49 +200,135 @@ async def _execute_user_command(
     voice_input: bool = False,
     workflow_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run the shared command pipeline with sensible phase 1 defaults."""
+    """Route user command through the intent pipeline and execute on the real device."""
     orchestrator = get_workflow_engine(session=session)
     resolved_user_id = user_id or DEFAULT_USER_ID
-    resolved_device_id = device_id or "7f0deaf6"
+    resolved_device_id = device_id or await _resolve_adb_device() or "7f0deaf6"
 
-    text_lower = command.lower()
-    app_target = None
-    for app_name in ["instagram", "chrome", "whatsapp", "youtube", "settings"]:
-        if app_name in text_lower:
-            app_target = app_name
-            break
+    # 1. Detect intent
+    intent_agent = get_intent_agent()
+    intent_result = await intent_agent.detect_intent(command)
+    intent = intent_result.intent.value
+    slots = intent_result.slots
 
-    if "open" in text_lower and app_target:
-        pkg_mapping = {
-            "instagram": "com.instagram.android",
-            "chrome": "com.android.chrome",
-            "whatsapp": "com.whatsapp",
-            "youtube": "com.google.android.youtube",
-            "settings": "com.android.settings"
-        }
-        pkg = pkg_mapping[app_target]
-        
-        # --- ADB binary resolution ---
-        adb_binary = find_adb_binary()
+    # 2. Verify device is connected
+    adb = get_adb_service(find_adb_binary())
+    connected_devices = await adb.list_devices()
+    if not connected_devices:
+        return {"success": False, "intent": intent, "error": "No Android device connected via ADB"}
+    real_device_id = connected_devices[0]["serial"]
 
+    # 3. Execute the corresponding ADB action for the detected intent
+    if intent == "battery_status":
+        r = await _adb_action(adb, real_device_id, "get_battery_level")
+        return {**r, "intent": "battery_status", "battery_level": r.get("adb_output")}
+
+    if intent == "foreground_app":
+        r = await _adb_action(adb, real_device_id, "get_foreground_app")
+        return {**r, "intent": "foreground_app", "foreground_app": r.get("adb_output")}
+
+    if intent == "take_screenshot":
         try:
-            subprocess.run([adb_binary, "-s", resolved_device_id, "shell", "monkey", "-p", pkg, "1"], capture_output=True, check=True)
-            return {"success": True, "intent": "open_app", "target": app_target, "status": "completed"}
-        except (FileNotFoundError, subprocess.SubprocessError, subprocess.CalledProcessError) as exc:
-            logger.error(f"Intercepted subprocess adb exception gracefully: {exc}")
-            # Non-blocking automated verification simulation alignment return
-            return {"success": True, "intent": "open_app", "target": app_target, "status": "completed", "warning": "Fallback routing simulation active"}
+            png_data = await adb.screencap(real_device_id, "")
+            filename = f"screenshot_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png"
+            save_dir = os.path.join(os.path.dirname(__file__), "..", "data", "screenshots")
+            os.makedirs(save_dir, exist_ok=True)
+            filepath = os.path.join(save_dir, filename)
+            with open(filepath, "wb") as f:
+                f.write(png_data)
+            return {"success": True, "intent": "take_screenshot", "status": "completed", "path": filepath}
+        except Exception as exc:
+            return {"success": False, "intent": "take_screenshot", "error": str(exc)}
 
+    if intent == "open_app":
+        app_name = slots.get("app")
+        if app_name:
+            r = await _adb_action(adb, real_device_id, "open_app", app_name)
+            return {**r, "intent": "open_app", "target": app_name}
+
+    if intent == "close_app":
+        app_name = slots.get("app")
+        if app_name:
+            r = await _adb_action(adb, real_device_id, "close_app", app_name)
+            return {**r, "intent": "close_app", "target": app_name}
+
+    if intent == "open_settings":
+        section = slots.get("section")
+        r = await _adb_action(adb, real_device_id, "open_app", "settings")
+        return {**r, "intent": "open_settings", "target": section or "general"}
+
+    if intent == "send_message":
+        recipient = slots.get("recipient")
+        message = slots.get("message")
+        app = slots.get("app", "whatsapp")
+        if recipient:
+            r = await _adb_action(adb, real_device_id, "open_app", app)
+            actions = [f"opened {app}"]
+            if message:
+                try:
+                    await adb.input_text(real_device_id, message)
+                    actions.append(f"typed message")
+                    await adb.press_key(real_device_id, 66)
+                    actions.append("pressed send")
+                except Exception:
+                    pass
+            return {**r, "intent": "send_message", "target": recipient, "app": app, "message": message, "actions": actions}
+
+    if intent == "open_chat":
+        recipient = slots.get("recipient")
+        app = slots.get("app", "instagram")
+        if recipient:
+            r = await _adb_action(adb, real_device_id, "open_app", app)
+            return {**r, "intent": "open_chat", "target": recipient, "app": app}
+
+    if intent == "call_contact":
+        recipient = slots.get("recipient")
+        if recipient:
+            r = await _adb_action(adb, real_device_id, "open_app", "phone")
+            try:
+                await adb.press_key(real_device_id, 5)
+            except Exception:
+                pass
+            return {**r, "intent": "call_contact", "target": recipient}
+
+    if intent in ("search", "web_search"):
+        query = slots.get("query")
+        app = slots.get("app")
+        if query:
+            import urllib.parse
+            enc = urllib.parse.quote(query)
+            # YouTube search via direct URL intent
+            if app and "youtube" in app.lower():
+                url = f"https://www.youtube.com/results?search_query={enc}"
+                r = await _adb_action(adb, real_device_id, "open_url", url)
+                return {**r, "intent": "search", "target": "youtube", "query": query}
+            # General web search via Google
+            if not app or intent == "web_search":
+                url = f"https://www.google.com/search?q={enc}"
+                r = await _adb_action(adb, real_device_id, "open_url", url)
+                return {**r, "intent": "web_search", "query": query}
+        # Fallback: just open the target app
+        target_app = app if app else "chrome"
+        r = await _adb_action(adb, real_device_id, "open_app", target_app)
+        return {**r, "intent": "search", "target": target_app, "query": query}
+
+    if intent == "open_folder":
+        folder = slots.get("folder", "downloads")
+        r = await _adb_action(adb, real_device_id, "open_app", "files")
+        return {**r, "intent": "open_folder", "target": folder}
+
+    # 4. Fall through to orchestrator for unknown intents
     try:
         return await orchestrator.execute_command(
             user_id=resolved_user_id,
             command=command,
-            device_id=resolved_device_id,
+            device_id=real_device_id,
             workflow_id=workflow_id,
             voice_input=voice_input,
         )
-    except Exception:
-        return {"success": True, "intent": "open_app", "target": "instagram", "status": "completed"}
+    except Exception as exc:
+        logger.error(f"Workflow execution failed: {exc}")
+        return {"success": False, "intent": intent, "error": str(exc)}
 
 
 async def _refresh_android_devices() -> None:
@@ -689,7 +821,7 @@ async def execute_command(
     await bootstrap_phase1_environment()
     cmd_text = request.command or "Open Instagram"
     resolved_uid = request.user_id or DEFAULT_USER_ID
-    target_dev = request.device_id or "7f0deaf6"
+    target_dev = request.device_id or await _resolve_adb_device() or "7f0deaf6"
 
     workflow = Workflow(
         user_id=resolved_uid,
@@ -723,7 +855,6 @@ async def execute_command(
         "execution_id": execution_id,
         "result": result,
         "device_selection": {"device_id": target_dev, "available": True, "device_type": "android", "display_name": "Android Phone"},
-        "assistant_text": f"✓ Command Processed on Device"
     })
     return response
 

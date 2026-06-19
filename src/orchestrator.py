@@ -629,6 +629,9 @@ class WorkflowOrchestrator:
         
         if step_type == "launch_app":
             app = step.get("app")
+            if not app:
+                return {"status": "error", "message": "No app specified in step"}
+
             device = self.device_manager.get_device(device_id)
 
             if device is not None:

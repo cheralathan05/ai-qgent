@@ -158,6 +158,9 @@ class ADBService:
         return devices
 
     def resolve_package_name(self, app_name: str) -> str:
+        if not app_name:
+            logger.warning("resolve_package_name called with empty/None app_name")
+            return ""
         normalized = app_name.strip().lower()
         return self.APP_PACKAGE_MAP.get(normalized, normalized)
 

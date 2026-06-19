@@ -39,6 +39,9 @@ class AndroidDevice(Device):
             self.adb = get_adb_service()
 
     def _resolve_package_name(self, app_name: str) -> str:
+        if app_name is None:
+            logger.warning("_resolve_package_name called with None app_name")
+            return ""
         return self.APP_PACKAGE_MAP.get(app_name.lower(), app_name)
 
     async def get_info(self) -> DeviceInfo:
@@ -161,6 +164,8 @@ class AndroidDevice(Device):
         return await self.open_app(app_name)
 
     async def open_app(self, app_name: str) -> Dict[str, Any]:
+        if not app_name:
+            return {"status": "error", "message": "No app name provided"}
         if not self.adb:
             return {"status": "error", "message": "ADB client unavailable"}
 
@@ -189,6 +194,8 @@ class AndroidDevice(Device):
             return {"status": "error", "message": str(exc)}
 
     async def close_app(self, app_name: str) -> Dict[str, Any]:
+        if not app_name:
+            return {"status": "error", "message": "No app name provided"}
         if not self.adb:
             return {"status": "error", "message": "ADB client unavailable"}
 

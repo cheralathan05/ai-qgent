@@ -1,7 +1,7 @@
 """Intent agent using rule-based understanding engine with optional Qwen LLM enhancement."""
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from understanding.entity_extractor import (
     EntityExtractor, IntentResult, IntentType,
@@ -18,8 +18,8 @@ class IntentAgent:
         self.entity_extractor = EntityExtractor()
         self.engine = get_command_understanding_engine()
 
-    async def detect_intent(self, command: str) -> IntentResult:
-        result = await self.engine.understand(command)
+    async def detect_intent(self, command: str, context: Optional[Dict[str, Any]] = None) -> IntentResult:
+        result = await self.engine.understand(command, context=context)
         logger.info(
             f"Intent: {result.intent.value} | conf={result.confidence:.2f} | "
             f"slots={result.slots} | cmd={command!r}"

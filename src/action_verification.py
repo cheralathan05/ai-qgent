@@ -31,7 +31,15 @@ class ScreenActionVerifier:
         self.visual = get_visual_understanding()
 
     async def verify_app_launched(self, device_id: str, app_name: str, foreground_app: Optional[str] = None) -> ActionVerificationResult:
-        if foreground_app and app_name.lower() in foreground_app.lower():
+        if not app_name:
+            return ActionVerificationResult(
+                action_type="launch_app",
+                passed=False,
+                message="No app name provided for verification",
+                confidence=0.0,
+            )
+        app_lower = app_name.lower()
+        if foreground_app and app_lower in foreground_app.lower():
             return ActionVerificationResult(
                 action_type="launch_app",
                 passed=True,
@@ -39,7 +47,7 @@ class ScreenActionVerifier:
                 confidence=0.99,
             )
         current = self.screen_memory.get_current_screen(device_id)
-        if current and current.app_name and app_name.lower() in current.app_name.lower():
+        if current and current.app_name and app_lower in current.app_name.lower():
             return ActionVerificationResult(
                 action_type="launch_app",
                 passed=True,

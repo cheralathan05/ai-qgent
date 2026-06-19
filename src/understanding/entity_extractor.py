@@ -49,6 +49,7 @@ class IntentResult:
     slots: Dict[str, str]
     raw_command: str
     normalized_command: str
+    context: Optional[Dict[str, Any]] = None
 
 
 KNOWN_APPS = {
@@ -109,6 +110,22 @@ class EntityExtractor:
                 phrase = " ".join(words[i:i + name_len])
                 if phrase in KNOWN_APPS:
                     return Entity(type="app", value=phrase, confidence=0.95)
+
+        # Fallback: extract unknown app name after trigger phrases
+        trigger_patterns = [
+            r'\b(?:open|launch|start|run)\s+(\w+)',
+            r'\bgo\s+to\s+(\w+)',
+            r'\bswitch\s+to\s+(\w+)',
+            r'\bcheck\s+(?:on\s+)?(\w+)',
+        ]
+        for pattern in trigger_patterns:
+            m = re.search(pattern, text_lower)
+            if m:
+                app_name = m.group(1).strip()
+                # Strip trailing noise words
+                app_name = re.sub(r'\s+(?:app|application|page|screen)$', '', app_name)
+                if app_name:
+                    return Entity(type="app", value=app_name, confidence=0.8)
         return None
 
     def extract_contact(self, text: str) -> Optional[Entity]:
@@ -162,6 +179,8 @@ class EntityExtractor:
         patterns = [
             r"(?:search|find|google|look up|look for)\s+([\w\s]+?)(?:\s+(?:on|in|using)\s+\w+)?$",
             r"(?:search|find|google)\s+(?:for\s+)?([\w\s]+?)(?:\s+(?:on|in|using)\s+\w+)?$",
+            r"(?:go\s+to\s+\w+\s+and\s+(?:open|find|search|look)\s+)([\w\s]+)",
+            r"(?:open\s+\w+\s+and\s+(?:search|find|look)\s+)([\w\s]+)",
         ]
         text_lower = text.lower().strip()
         for pat in patterns:
@@ -193,6 +212,10 @@ class EntityExtractor:
             app = next((e for e in entities if e.type == "app"), None)
             if app:
                 slots["app"] = app.value
+            else:
+                contact = next((e for e in entities if e.type == "contact"), None)
+                if contact:
+                    slots["app"] = contact.value
         elif intent == IntentType.CLOSE_APP:
             app = next((e for e in entities if e.type == "app"), None)
             if app:
@@ -218,6 +241,8 @@ class EntityExtractor:
                 slots["recipient"] = contact.value
             if app:
                 slots["app"] = app.value
+            elif contact:
+                slots["app"] = contact.value
         elif intent == IntentType.SEARCH:
             query = next((e for e in entities if e.type == "search_query"), None)
             app = next((e for e in entities if e.type == "app"), None)
@@ -274,6 +299,8 @@ class IntentClassifier:
         (IntentType.SEARCH, [
             r"\bsearch\b", r"\bfind\b", r"\blook\s+for\b",
             r"\bsearch\s+for\b",
+            r"\bgo\s+to\s+\w+\s+and\s+(?:open|find|search|look)\b",
+            r"\bopen\s+\w+\s+and\s+(?:search|find|look)\b",
         ], 0.85),
         (IntentType.OPEN_SETTINGS, [
             r"\bsettings\b", r"\bconfigure\b", r"\bpreferences\b",
@@ -295,9 +322,11 @@ class IntentClassifier:
             r"\bopen\b", r"\blaunch\b", r"\bstart\b", r"\brun\b",
             r"\bswitch\s+to\b", r"\bgo\s+to\b",
             r"\bi\s+want\s+to\s+(?:open|launch|start|check|see|use)\b",
-            r"\bcan\s+(?:you|i)\s+(?:open|launch)\b",
-            r"\bcheck\b.*\b(?:instagram|whatsapp|chrome|youtube|gmail|maps)\b",
+            r"\bcan\s+(?:you|i)\s+(?:open|launch|start|run|check)\b",
+            r"\bi\s+want\s+to\s+check\b",
+            r"\bcheck\s+(?:on\s+)?(?:my\s+)?\w+",
             r"\bopen\s+(?:my\s+)?\w+\s+app\b",
+            r"\bcould\s+you\s+(?:open|launch|start|run|check)\b",
         ], 0.85),
     ]
 
@@ -391,7 +420,7 @@ class CommandUnderstandingEngine:
         self.normalizer = CommandNormalizer()
         self.ambiguity_resolver = AmbiguityResolver(contact_db, app_db)
 
-    async def understand(self, raw_command: str) -> IntentResult:
+    async def understand(self, raw_command: str, context: Optional[Dict[str, Any]] = None) -> IntentResult:
         normalized = self.normalizer.normalize(raw_command)
         intent, confidence = self.intent_classifier.classify(normalized)
         entities = self.entity_extractor.extract_all(normalized)
@@ -419,6 +448,7 @@ class CommandUnderstandingEngine:
             slots=slots,
             raw_command=raw_command,
             normalized_command=normalized,
+            context=context,
         )
 
     def _fill_slots(self, intent: IntentType, entities: List[Entity]) -> Dict[str, str]:

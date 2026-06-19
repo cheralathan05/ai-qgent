@@ -120,18 +120,43 @@ def _resolve_device_selection(
 def _build_simple_response(result: Dict[str, Any], command: str, transcript: Optional[str] = None) -> Dict[str, Any]:
     """Format a user-facing response for the phase 1 command flow."""
     target = result.get("target")
+    intent = result.get("intent", "")
     success = bool(result.get("success"))
 
-    if success and target:
-        message = f"✓ {str(target).title()} Opened Successfully"
-    elif success:
-        message = "✓ Command Completed Successfully"
+    if success:
+        if intent == "battery_status":
+            battery = result.get("battery_level") or result.get("adb_output")
+            if battery:
+                message = f"Your phone battery is at {battery}%."
+            else:
+                message = "Command completed successfully."
+        elif intent == "foreground_app":
+            fg = result.get("foreground_app") or result.get("adb_output")
+            if fg:
+                message = f"The current app is {fg}."
+            else:
+                message = "Command completed successfully."
+        elif intent == "take_screenshot":
+            message = "Screenshot captured."
+        elif intent == "send_message":
+            recipient = result.get("target", "your contact")
+            message = f"Message sent to {recipient}."
+        elif intent == "call_contact":
+            recipient = result.get("target", "your contact")
+            message = f"Calling {recipient}."
+        elif intent in ("search", "web_search"):
+            message = "Search completed."
+        elif target:
+            pretty = str(target).replace("_", " ").title()
+            message = f"{pretty} is ready."
+        else:
+            message = "Command completed successfully."
     else:
         message = result.get("error") or "Command failed"
 
     payload = {
         "success": success,
-        "intent": result.get("intent"),
+        "intent": intent,
         "target": target,
         "status": result.get("status", "completed" if success else "failed"),
         "message": message,
@@ -191,6 +216,53 @@ async def _adb_action(adb, device_id, method, *args) -> Dict[str, Any]:
         return {"success": False, "status": "error", "error": str(exc)}
 
 
+YOUTUBE_APP_NAME = "youtube"
+YOUTUBE_PACKAGE = "com.google.android.youtube"
+KEYCODE_SEARCH = 84
+KEYCODE_ENTER = 66
+
+
+async def _search_youtube(adb, device_id: str, query: str) -> Dict[str, Any]:
+    """Open YouTube and search for query using native app interaction."""
+    actions = []
+    try:
+        await adb.open_app(device_id, YOUTUBE_APP_NAME)
+        actions.append("opened_youtube")
+        await asyncio.sleep(4)
+        foreground = await adb.get_foreground_app(device_id)
+        if not foreground or YOUTUBE_PACKAGE not in str(foreground):
+            try:
+                await adb.start_activity(device_id, YOUTUBE_PACKAGE, "com.google.android.youtube.HomeActivity")
+                actions.append("launched_via_activity")
+                await asyncio.sleep(3)
+                foreground = await adb.get_foreground_app(device_id)
+            except Exception:
+                pass
+            if not foreground or YOUTUBE_PACKAGE not in str(foreground):
+                return {"success": False, "status": "error", "error": "YouTube did not open", "actions": actions}
+        try:
+            await adb.press_key(device_id, KEYCODE_SEARCH)
+            actions.append("pressed_search_key")
+            await asyncio.sleep(1.5)
+        except Exception:
+            import urllib.parse
+            fallback_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(query)}"
+            await adb.open_url(device_id, fallback_url)
+            actions.append("used_url_fallback")
+            await asyncio.sleep(3)
+            return {"success": True, "status": "completed", "actions": actions, "fallback": "url_intent"}
+        await adb.input_text(device_id, query)
+        actions.append("typed_query")
+        await asyncio.sleep(0.5)
+        await adb.press_key(device_id, KEYCODE_ENTER)
+        actions.append("pressed_enter")
+        await asyncio.sleep(2)
+        return {"success": True, "status": "completed", "actions": actions}
+    except Exception as exc:
+        logger.error(f"YouTube search failed: {exc}")
+        return {"success": False, "status": "error", "error": str(exc), "actions": actions}
+
+
 async def _execute_user_command(
     *,
     session,
@@ -199,15 +271,16 @@ async def _execute_user_command(
     device_id: Optional[str] = None,
     voice_input: bool = False,
     workflow_id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Route user command through the intent pipeline and execute on the real device."""
     orchestrator = get_workflow_engine(session=session)
     resolved_user_id = user_id or DEFAULT_USER_ID
     resolved_device_id = device_id or await _resolve_adb_device() or "7f0deaf6"
 
-    # 1. Detect intent
+    # 1. Detect intent (with context for disambiguation)
     intent_agent = get_intent_agent()
-    intent_result = await intent_agent.detect_intent(command)
+    intent_result = await intent_agent.detect_intent(command, context=context)
     intent = intent_result.intent.value
     slots = intent_result.slots
 
@@ -297,10 +370,9 @@ async def _execute_user_command(
         if query:
             import urllib.parse
             enc = urllib.parse.quote(query)
-            # YouTube search via direct URL intent
+            # YouTube search via native app interaction
             if app and "youtube" in app.lower():
-                url = f"https://www.youtube.com/results?search_query={enc}"
-                r = await _adb_action(adb, real_device_id, "open_url", url)
+                r = await _search_youtube(adb, real_device_id, query)
                 return {**r, "intent": "search", "target": "youtube", "query": query}
             # General web search via Google
             if not app or intent == "web_search":
@@ -779,6 +851,16 @@ async def create_workflow(
     )
 
     target_dev = selection.device_id if selection.available else "7f0deaf6"
+    device_label = selection.display_name.lower() if selection.display_name else "phone"
+
+    # Build pre-execution assistant reply
+    pre_reply = conversation_manager.build_pre_execution_reply(
+        command=conversation_result.command_text,
+        intent="open_app",
+        target=None,
+        device_label=device_label,
+        continuation=conversation_result.continuation,
+    )
 
     workflow = Workflow(
         user_id=request.user_id,
@@ -792,6 +874,13 @@ async def create_workflow(
     session.commit()
     session.refresh(workflow)
 
+    # Build context from session for intent disambiguation
+    session_context = {
+        "last_intent": conversation_result.session.last_intent,
+        "last_target": conversation_result.session.last_target,
+        "last_command": conversation_result.session.last_command,
+    }
+
     result = await _execute_user_command(
         session=session,
         command=conversation_result.command_text,
@@ -799,6 +888,34 @@ async def create_workflow(
         device_id=target_dev,
         voice_input=request.voice_input,
         workflow_id=workflow.id,
+        context=session_context,
+    )
+
+    # Resolve intent/target from result
+    final_intent = result.get("intent", "open_app")
+    final_target = result.get("target")
+
+    # Build completion assistant reply
+    assistant_reply = conversation_manager.build_completion_reply(
+        command=conversation_result.command_text,
+        intent=final_intent,
+        target=final_target,
+        device_label=device_label,
+        selection_available=selection.available,
+        result=result,
+        continuation=conversation_result.continuation,
+    )
+
+    # Update session with final state
+    conversation_manager.finalize_session(
+        session=conversation_result.session,
+        command=conversation_result.command_text,
+        intent=final_intent,
+        target=final_target,
+        device_id=target_dev,
+        device_type="android",
+        device_label=device_label,
+        assistant_text=assistant_reply,
     )
 
     execution_id = await _record_execution(
@@ -809,7 +926,8 @@ async def create_workflow(
 
     response = {"workflow_id": workflow.id, **result, "execution_id": execution_id}
     response["device_selection"] = {"device_id": target_dev, "available": True, "device_type": "android", "display_name": "Android Device"}
-    response["assistant_text"] = f"Opening application on phone."
+    response["assistant_text"] = assistant_reply
+    response["session"] = conversation_result.session.to_dict()
     return response
 
 

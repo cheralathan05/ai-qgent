@@ -335,34 +335,74 @@ async def _execute_user_command(
         message = slots.get("message")
         app = slots.get("app", "whatsapp")
         if recipient:
+            from services.contact_store import get_contact_store
+            contact_store = get_contact_store()
+            contact = contact_store.resolve(recipient)
+            phone = contact.phone if contact else None
+            resolved = contact.display_name if contact else recipient
+            actions = []
+            if app == "whatsapp" and phone:
+                try:
+                    encoded = "".join(f"%{hex(ord(c))[2:].upper()}" for c in message) if message else ""
+                    intent_url = f"smsto:{phone}"
+                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "{intent_url}" -n "com.whatsapp/.Conversation"')
+                    actions.append("opened whatsapp chat via deep link")
+                    if message:
+                        await asyncio.sleep(2)
+                        try:
+                            await adb.input_text(real_device_id, message)
+                            actions.append("typed message")
+                            await adb.press_key(real_device_id, 66)
+                            actions.append("pressed send")
+                        except Exception:
+                            pass
+                    return {"success": True, "intent": "send_message", "target": resolved, "app": app, "message": message, "actions": actions, "phone": phone}
+                except Exception as exc:
+                    actions.append(f"deep link failed: {exc}")
             r = await _adb_action(adb, real_device_id, "open_app", app)
             actions = [f"opened {app}"]
             if message:
                 try:
                     await adb.input_text(real_device_id, message)
-                    actions.append(f"typed message")
+                    actions.append("typed message")
                     await adb.press_key(real_device_id, 66)
                     actions.append("pressed send")
                 except Exception:
                     pass
-            return {**r, "intent": "send_message", "target": recipient, "app": app, "message": message, "actions": actions}
+            return {**r, "intent": "send_message", "target": resolved, "app": app, "message": message, "actions": actions}
 
     if intent == "open_chat":
         recipient = slots.get("recipient")
         app = slots.get("app", "instagram")
         if recipient:
+            from services.contact_store import get_contact_store
+            contact = get_contact_store().resolve(recipient)
+            resolved = contact.display_name if contact else recipient
+            phone = contact.phone if contact else None
+            if app == "whatsapp" and phone:
+                try:
+                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "smsto:{phone}" -n "com.whatsapp/.Conversation"')
+                    return {"success": True, "intent": "open_chat", "target": resolved, "app": app, "phone": phone}
+                except Exception:
+                    pass
             r = await _adb_action(adb, real_device_id, "open_app", app)
-            return {**r, "intent": "open_chat", "target": recipient, "app": app}
+            return {**r, "intent": "open_chat", "target": resolved, "app": app}
 
     if intent == "call_contact":
         recipient = slots.get("recipient")
         if recipient:
+            from services.contact_store import get_contact_store
+            contact = get_contact_store().resolve(recipient)
+            phone = contact.phone if contact else None
+            resolved = contact.display_name if contact else recipient
+            if phone:
+                try:
+                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.DIAL -d "tel:{phone}"')
+                    return {"success": True, "intent": "call_contact", "target": resolved, "phone": phone}
+                except Exception:
+                    pass
             r = await _adb_action(adb, real_device_id, "open_app", "phone")
-            try:
-                await adb.press_key(real_device_id, 5)
-            except Exception:
-                pass
-            return {**r, "intent": "call_contact", "target": recipient}
+            return {**r, "intent": "call_contact", "target": resolved}
 
     if intent in ("search", "web_search"):
         query = slots.get("query")

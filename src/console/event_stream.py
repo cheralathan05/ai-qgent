@@ -74,9 +74,41 @@ class EventType(str, Enum):
     RECOVERY_SUCCEEDED = "recovery_succeeded"
     RECOVERY_FAILED = "recovery_failed"
     
-    # Screen
+    # Screen / Vision
     SCREEN_CHANGED = "screen_changed"
     SCREEN_DETECTED = "screen_detected"
+    SCREEN_CAPTURED = "screen_captured"
+    SCREEN_CLASSIFIED = "screen_classified"
+    UI_ELEMENTS_DETECTED = "ui_elements_detected"
+    LAYOUT_DETECTED = "layout_detected"
+    
+    # OCR
+    OCR_STARTED = "ocr_started"
+    OCR_COMPLETED = "ocr_completed"
+    
+    # Navigation
+    NAVIGATION_STARTED = "navigation_started"
+    NAVIGATION_COMPLETED = "navigation_completed"
+    NAVIGATION_FAILED = "navigation_failed"
+    NAVIGATION_PLANNED = "navigation_planned"
+    
+    # Visual Verification
+    VISUAL_VERIFICATION_STARTED = "visual_verification_started"
+    VISUAL_VERIFICATION_PASSED = "visual_verification_passed"
+    VISUAL_VERIFICATION_FAILED = "visual_verification_failed"
+    VISUAL_VERIFICATION_COMPLETED = "visual_verification_completed"
+    
+    # Memory
+    MEMORY_UPDATED = "memory_updated"
+    MEMORY_CLEARED = "memory_cleared"
+    CONTEXT_UPDATED = "context_updated"
+    
+    # Phase 2 Events
+    CHAT_DETECTED = "chat_detected"
+    MESSAGE_DETECTED = "message_detected"
+    BUTTON_DETECTED = "button_detected"
+    INPUT_DETECTED = "input_detected"
+    ELEMENT_INTERACTED = "element_interacted"
     
     # System
     SYSTEM_ALERT = "system_alert"
@@ -160,6 +192,29 @@ class WorkflowEvent:
             EventType.MESSAGE_SENT: "✉️",
             EventType.SCREEN_CHANGED: "📺",
             EventType.SCREEN_DETECTED: "🔍",
+            EventType.SCREEN_CAPTURED: "📸",
+            EventType.SCREEN_CLASSIFIED: "🏷️",
+            EventType.UI_ELEMENTS_DETECTED: "🔲",
+            EventType.LAYOUT_DETECTED: "📐",
+            EventType.OCR_STARTED: "👁️",
+            EventType.OCR_COMPLETED: "📝",
+            EventType.NAVIGATION_STARTED: "🧭",
+            EventType.NAVIGATION_COMPLETED: "✅",
+            EventType.NAVIGATION_FAILED: "❌",
+            EventType.NAVIGATION_PLANNED: "🗺️",
+            EventType.VISUAL_VERIFICATION_STARTED: "🔎",
+            EventType.VISUAL_VERIFICATION_PASSED: "✅",
+            EventType.VISUAL_VERIFICATION_FAILED: "❌",
+            EventType.MEMORY_UPDATED: "💾",
+            EventType.MEMORY_CLEARED: "🗑️",
+            EventType.CONTEXT_UPDATED: "🔄",
+            EventType.CHAT_DETECTED: "💬",
+            EventType.MESSAGE_DETECTED: "✉️",
+            EventType.BUTTON_DETECTED: "🔘",
+            EventType.INPUT_DETECTED: "⌨️",
+            EventType.ELEMENT_INTERACTED: "👆",
+            EventType.VISUAL_VERIFICATION_COMPLETED: "✅",
+            EventType.NAVIGATION_PLANNED: "🗺️",
         }
         return icons.get(self.event_type, "•")
 

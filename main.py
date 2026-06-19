@@ -188,6 +188,167 @@ async def websocket_events(websocket: WebSocket, client_id: str):
         logger.info(f"WebSocket client disconnected: {client_id}")
 
 
+# ==================== Phase 2 WebSocket Channels ====================
+
+@app.websocket("/ws/screen/{client_id}")
+async def websocket_screen(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "capture":
+                from vision.screen_capture import get_screen_capture_service
+                from services.adb_service import get_adb_service, find_adb_binary
+                adb = get_adb_service(find_adb_binary())
+                devices = await adb.list_devices()
+                if devices:
+                    result = await get_screen_capture_service().capture_from_adb(devices[0]["serial"])
+                    if result.success:
+                        await websocket.send_json({
+                            "event": "screen_captured", "device_id": devices[0]["serial"],
+                            "width": result.width, "height": result.height,
+                            "filepath": result.filepath,
+                        })
+                    else:
+                        await websocket.send_json({"event": "error", "message": result.error})
+                else:
+                    await websocket.send_json({"event": "error", "message": "No Android device"})
+            else:
+                await websocket.send_json({"event": "ack", "received": data})
+    except Exception:
+        pass
+    finally:
+        logger.info(f"Screen WS client disconnected: {client_id}")
+
+
+@app.websocket("/ws/navigation/{client_id}")
+async def websocket_navigation(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_json({"event": "navigation_ack", "client_id": client_id, "received": data})
+    except Exception:
+        pass
+    finally:
+        logger.info(f"Navigation WS client disconnected: {client_id}")
+
+
+@app.websocket("/ws/ocr/{client_id}")
+async def websocket_ocr(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ocr":
+                from vision.screen_capture import get_screen_capture_service
+                from vision.ocr_service import get_ocr_service
+                from services.adb_service import get_adb_service, find_adb_binary
+                adb = get_adb_service(find_adb_binary())
+                devices = await adb.list_devices()
+                if devices:
+                    capture = await get_screen_capture_service().capture_from_adb(devices[0]["serial"])
+                    if capture.success and capture.image is not None:
+                        ocr = await get_ocr_service().extract_text(capture.image)
+                        await websocket.send_json({
+                            "event": "ocr_completed", "device_id": devices[0]["serial"],
+                            "full_text": ocr.full_text,
+                            "texts": [{"text": t.text, "confidence": t.confidence, "x": t.x, "y": t.y}
+                                      for t in ocr.texts[:30]],
+                        })
+                    else:
+                        await websocket.send_json({"event": "error", "message": "Capture failed"})
+                else:
+                    await websocket.send_json({"event": "error", "message": "No Android device"})
+            else:
+                await websocket.send_json({"event": "ack", "received": data})
+    except Exception:
+        pass
+    finally:
+        logger.info(f"OCR WS client disconnected: {client_id}")
+
+
+@app.websocket("/ws/vision/{client_id}")
+async def websocket_vision(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "analyze":
+                from vision.screen_capture import get_screen_capture_service
+                from vision.ocr_service import get_ocr_service
+                from vision.ui_detector import get_ui_detector
+                from vision.screen_classifier import get_screen_classifier
+                from services.adb_service import get_adb_service, find_adb_binary
+                adb = get_adb_service(find_adb_binary())
+                devices = await adb.list_devices()
+                if devices:
+                    capture = await get_screen_capture_service().capture_from_adb(devices[0]["serial"])
+                    if capture.success and capture.image is not None:
+                        ocr = await get_ocr_service().extract_text(capture.image)
+                        ui = await get_ui_detector().detect_elements(capture.image)
+                        classification = await get_screen_classifier().classify(
+                            image=capture.image, foreground_app=None,
+                            text_content=ocr.full_text, ui_result=ui,
+                        )
+                        await websocket.send_json({
+                            "event": "vision_analysis", "device_id": devices[0]["serial"],
+                            "classification": classification.to_dict(),
+                            "elements": {"buttons": len(ui.buttons), "inputs": len(ui.inputs),
+                                         "total": len(ui.elements)},
+                            "text_preview": ocr.full_text[:300],
+                        })
+                    else:
+                        await websocket.send_json({"event": "error", "message": "Capture failed"})
+                else:
+                    await websocket.send_json({"event": "error", "message": "No Android device"})
+            else:
+                await websocket.send_json({"event": "ack", "received": data})
+    except Exception:
+        pass
+    finally:
+        logger.info(f"Vision WS client disconnected: {client_id}")
+
+
+@app.websocket("/ws/messages/{client_id}")
+async def websocket_messages(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_json({"event": "messages_ack", "client_id": client_id, "received": data})
+    except Exception:
+        pass
+    finally:
+        logger.info(f"Messages WS client disconnected: {client_id}")
+
+
+@app.websocket("/ws/memory/{client_id}")
+async def websocket_memory(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "status":
+                from vision.phone_memory import get_phone_memory
+                memory = get_phone_memory()
+                devs = list(memory._screens.keys()) if hasattr(memory, '_screens') else []
+                await websocket.send_json({
+                    "event": "memory_status", "devices_with_memory": devs,
+                })
+            else:
+                await websocket.send_json({"event": "ack", "received": data})
+    except Exception:
+        pass
+    finally:
+        logger.info(f"Memory WS client disconnected: {client_id}")
+
+
+# Register Phase 2 API router
+from api.phase2 import router as phase2_router
+app.include_router(phase2_router, prefix="/api/phase2")
+
+
 # Health check endpoint
 @app.get("/")
 async def root():

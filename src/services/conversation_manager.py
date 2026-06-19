@@ -258,6 +258,13 @@ class ConversationManager:
 
         return f"Working on that {device_phrase}."
 
+    def record_screen_context(self, session: VoiceSession, screen_summary: Optional[Dict] = None) -> None:
+        if screen_summary:
+            session.context["last_screen"] = screen_summary.get("current_screen")
+            session.context["last_screen_type"] = screen_summary.get("current_screen", {}).get("screen_type") if screen_summary.get("current_screen") else None
+            session.context["last_app_context"] = screen_summary.get("current_screen", {}).get("app_name") if screen_summary.get("current_screen") else None
+            session.context["screen_history_count"] = screen_summary.get("screen_history_count", 0)
+
     def build_completion_reply(
         self,
         *,
@@ -268,6 +275,7 @@ class ConversationManager:
         selection_available: bool,
         result: Dict[str, Any],
         continuation: bool = False,
+        screen_context: Optional[Dict] = None,
     ) -> str:
         if not selection_available:
             return "I cannot find your phone. Would you like me to use your laptop instead?"
@@ -291,6 +299,10 @@ class ConversationManager:
 
         if intent_lower == "send_message":
             recipient = self._extract_recipient(command) or "your contact"
+            if screen_context:
+                sc = screen_context.get("current_screen")
+                if sc and sc.get("screen_type"):
+                    return f"Message sent to {recipient} successfully. The screen now shows {sc['screen_type']}."
             return f"Message sent to {recipient} successfully."
 
         if intent_lower == "call_contact":
@@ -308,6 +320,12 @@ class ConversationManager:
 
         if target:
             pretty = self._pretty(target)
+            if screen_context:
+                sc = screen_context.get("current_screen")
+                if sc and sc.get("screen_type") and sc["screen_type"] != "unknown":
+                    if device_label == "phone":
+                        return f"{pretty} is ready. Screen shows: {sc['screen_type'].replace('_', ' ')}."
+                    return f"{pretty} is ready on your laptop. Screen shows: {sc['screen_type'].replace('_', ' ')}."
             if device_label == "phone":
                 return f"{pretty} is ready."
             return f"{pretty} is ready on your laptop."
@@ -333,6 +351,7 @@ class ConversationManager:
         device_type: Optional[str],
         device_label: str,
         assistant_text: str,
+        screen_context: Optional[Dict] = None,
     ) -> VoiceSession:
         session.last_command = command
         session.last_intent = intent
@@ -340,15 +359,18 @@ class ConversationManager:
         session.current_device_id = device_id
         session.current_device_type = device_type
         session.current_device_label = device_label
-        session.context.update(
-            {
-                "last_command": command,
-                "last_intent": intent,
-                "last_target": target,
-                "last_device_id": device_id,
-                "last_device_type": device_type,
-            }
-        )
+        context = {
+            "last_command": command,
+            "last_intent": intent,
+            "last_target": target,
+            "last_device_id": device_id,
+            "last_device_type": device_type,
+        }
+        if screen_context:
+            context["last_screen"] = screen_context.get("current_screen")
+            context["last_screen_type"] = screen_context.get("current_screen", {}).get("screen_type") if screen_context.get("current_screen") else None
+            context["last_app_context"] = screen_context.get("current_screen", {}).get("app_name") if screen_context.get("current_screen") else None
+        session.context.update(context)
         session.record_assistant_message(assistant_text)
         self.session_store.update_session(session)
         return session

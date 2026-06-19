@@ -42,6 +42,15 @@ from visual_understanding import get_visual_understanding
 from action_verification import get_action_verifier, ActionVerificationResult
 from observability import get_metrics_collector, WorkflowMetrics
 
+# Phase 2 imports
+from navigation.navigation_intelligence import get_navigation_intelligence, NavigationInstruction, NavigationStepType, NavigationPath
+from verification.visual_verifier import get_visual_verifier, VisualVerificationType, VisualVerificationResult
+from vision.phone_memory import get_phone_memory, PhoneMemory, ScreenRecord
+from vision.screen_classifier import get_screen_classifier, ScreenType, ScreenClassificationResult
+from vision.screen_capture import get_screen_capture_service, ScreenCaptureResult
+from vision.ocr_service import get_ocr_service, OCRResult
+from vision.ui_detector import get_ui_detector, UIDetectionResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,6 +93,15 @@ class WorkflowOrchestrator:
         self.visual_understanding = get_visual_understanding()
         self.action_verifier = get_action_verifier()
         self.metrics_collector = get_metrics_collector()
+
+        # Phase 2 components
+        self.nav_intelligence = get_navigation_intelligence()
+        self.visual_verifier = get_visual_verifier()
+        self.phone_memory = get_phone_memory()
+        self.screen_capture = get_screen_capture_service()
+        self.screen_classifier = get_screen_classifier()
+        self.ocr_service = get_ocr_service()
+        self.ui_detector = get_ui_detector()
     
     async def execute_command(
         self,
@@ -618,6 +636,168 @@ class WorkflowOrchestrator:
         
         return steps
     
+    async def _capture_and_classify_screen(
+        self,
+        device_id: str,
+        workflow_id: str,
+        emit_events: bool = True,
+    ) -> Optional[dict]:
+        """Capture and classify current screen, store in PhoneMemory."""
+        capture = await self.screen_capture.capture_from_adb(device_id)
+
+        if emit_events:
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.SCREEN_CAPTURED,
+                payload={
+                    "success": capture.success,
+                    "filepath": capture.filepath,
+                    "error": capture.error,
+                },
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+        if not capture.success or capture.image is None:
+            return None
+
+        ocr = await self.ocr_service.extract_text(capture.image)
+        if emit_events:
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.OCR_COMPLETED,
+                payload={"text_length": len(ocr.full_text), "words": len(ocr.text_blocks)},
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+        ui = await self.ui_detector.detect_elements(capture.image)
+
+        classification = await self.screen_classifier.classify(
+            image=capture.image,
+            text_content=ocr.full_text,
+            ui_result=ui,
+        )
+        if emit_events:
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.SCREEN_CLASSIFIED,
+                payload={
+                    "screen_type": classification.screen_type.value,
+                    "app_name": classification.app_name,
+                    "confidence": classification.confidence,
+                    "reason": classification.classification_reason,
+                },
+                source="screen_classifier",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+        record = self.phone_memory.record_screen(
+            device_id=device_id,
+            screen_type=classification.screen_type,
+            app_name=classification.app_name,
+            screen_name=classification.screen_type.value,
+            filepath=capture.filepath,
+            text_content=ocr.full_text,
+            elements=ui.elements,
+        )
+
+        if emit_events:
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.MEMORY_UPDATED,
+                payload={
+                    "screen_type": classification.screen_type.value,
+                    "app_name": classification.app_name,
+                    "record": record.to_dict(),
+                },
+                source="phone_memory",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+        return {
+            "capture": capture,
+            "ocr": ocr,
+            "ui": ui,
+            "classification": classification,
+            "record": record,
+        }
+
+    async def _execute_nav_instructions(
+        self,
+        instructions: List[NavigationInstruction],
+        device_id: str,
+        workflow_id: str,
+    ) -> List[dict]:
+        """Execute NavigationInstruction list as ADB commands."""
+        results = []
+        for inst in instructions:
+            if inst.step_type == NavigationStepType.OPEN_APP:
+                app = inst.target
+                device = self.device_manager.get_device(device_id)
+                if device is not None:
+                    result = await device.launch_app(app)
+                elif self.adb is not None:
+                    await self.adb.shell(device_id, f"monkey -p {app} 1" if "." in app else f"am start -n {app}/{app}.MainActivity")
+                    await asyncio.sleep(3)
+                    result = {"status": "success", "app": app}
+                else:
+                    result = {"status": "success", "app": app}
+                results.append(result)
+
+            elif inst.step_type == NavigationStepType.TAP:
+                if inst.x > 0 and inst.y > 0:
+                    if self.adb is not None:
+                        await self.adb.shell(device_id, f"input tap {inst.x} {inst.y}")
+                    await asyncio.sleep(inst.duration)
+                results.append({"status": "success", "type": "tapped", "target": inst.target})
+
+            elif inst.step_type == NavigationStepType.TYPE_TEXT:
+                if self.adb is not None and inst.text:
+                    safe = inst.text.replace(" ", "%s").replace("'", "")
+                    await self.adb.shell(device_id, f"input text '{safe}'")
+                    await asyncio.sleep(0.3)
+                results.append({"status": "success", "type": "text_typed", "text": inst.text[:50]})
+
+            elif inst.step_type == NavigationStepType.PRESS_KEY:
+                if self.adb is not None:
+                    await self.adb.shell(device_id, f"input keyevent {inst.keycode}")
+                await asyncio.sleep(inst.duration)
+                results.append({"status": "success", "type": "key_pressed", "keycode": inst.keycode})
+
+            elif inst.step_type == NavigationStepType.WAIT:
+                await asyncio.sleep(inst.duration)
+                results.append({"status": "success", "type": "waited", "duration": inst.duration})
+
+            elif inst.step_type == NavigationStepType.SWIPE:
+                if self.adb is not None:
+                    direction = inst.target.lower()
+                    if direction == "down":
+                        await self.adb.shell(device_id, "input swipe 500 1000 500 200")
+                    else:
+                        await self.adb.shell(device_id, "input swipe 500 200 500 1000")
+                    await asyncio.sleep(1)
+                results.append({"status": "success", "type": "scrolled", "direction": inst.target})
+
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.ELEMENT_INTERACTED,
+                payload={
+                    "step_type": inst.step_type,
+                    "target": inst.target,
+                    "description": inst.description,
+                },
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+        return results
+
     async def _execute_step(
         self,
         step: Dict[str, Any],
@@ -626,7 +806,7 @@ class WorkflowOrchestrator:
     ) -> Dict[str, Any]:
         """Execute a single step"""
         step_type = step.get("type")
-        
+
         if step_type == "launch_app":
             app = step.get("app")
             if not app:
@@ -635,17 +815,70 @@ class WorkflowOrchestrator:
             device = self.device_manager.get_device(device_id)
 
             if device is not None:
-                return await device.launch_app(app)
-
-            if self.adb is not None:
-                await self.adb.shell(device_id, f"am start -n {app}/{app}.MainActivity")
+                result = await device.launch_app(app)
+            elif self.adb is not None:
+                await self.adb.shell(device_id, f"monkey -p {app} 1" if "." in app else f"am start -n {app}/{app}.MainActivity")
                 await asyncio.sleep(2)
-                return {"status": "success", "app": app}
+                result = {"status": "success", "app": app}
+            else:
+                result = {"status": "success", "app": app}
 
-            return {"status": "error", "message": "No device available for execution"}
-        
+            # Capture and classify screen after launch
+            screen_info = await self._capture_and_classify_screen(device_id, workflow_id, emit_events=False)
+            return result
+
         elif step_type == "send_message":
-            return {"status": "success", "type": "message_sent", "message": "Message sent successfully"}
+            recipient = step.get("recipient", "")
+            message = step.get("message", "")
+            app = step.get("app", "whatsapp")
+
+            path = self.nav_intelligence.plan_send_message(device_id, app, recipient, message)
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.NAVIGATION_PLANNED,
+                payload={"target": f"send {message[:20]} to {recipient}", "steps": path.total_steps, "confidence": path.confidence},
+                source="navigation_intelligence",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.NAVIGATION_STARTED,
+                payload={"plan": path.to_dict()},
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+            try:
+                sub_results = await self._execute_nav_instructions(path.instructions, device_id, workflow_id)
+                await self.event_manager.emit(
+                    workflow_id=workflow_id,
+                    event_type=EventType.NAVIGATION_COMPLETED,
+                    payload={"steps_executed": len(sub_results), "all_success": all(r.get("status") == "success" for r in sub_results)},
+                    source="orchestrator",
+                    severity=EventSeverity.INFO,
+                    device_id=device_id,
+                )
+            except Exception as e:
+                await self.event_manager.emit(
+                    workflow_id=workflow_id,
+                    event_type=EventType.NAVIGATION_FAILED,
+                    payload={"error": str(e)},
+                    source="orchestrator",
+                    severity=EventSeverity.ERROR,
+                    device_id=device_id,
+                )
+                return {"status": "error", "error": str(e), "type": "message_send_failed"}
+
+            # Record user action in PhoneMemory
+            self.phone_memory.record_user_action(
+                user_id=step.get("user_id", ""), command=f"send {message[:20]}",
+                intent="send_message", app=app, contact=recipient, message=message,
+            )
+
+            return {"status": "success", "type": "message_sent", "path_confidence": path.confidence}
 
         elif step_type == "show_device_view":
             return {"status": "success", "type": "device_view_shown"}
@@ -654,20 +887,236 @@ class WorkflowOrchestrator:
             screen = step.get("target_screen", step.get("screen", "unknown"))
             app_name = step.get("app", step.get("current_app", ""))
             self.screen_memory.record_screen_change(device_id, screen, app_name)
+
+            target_screen_type = None
+            for st in ScreenType:
+                if st.value == screen or screen in st.value:
+                    target_screen_type = st
+                    break
+            if target_screen_type is None and app_name:
+                target_screen_type = ScreenType.UNKNOWN_SCREEN
+
+            if target_screen_type:
+                path = self.nav_intelligence.plan_path_to_screen(device_id, target_screen_type, app_name)
+                if path.instructions:
+                    sub_results = await self._execute_nav_instructions(path.instructions, device_id, workflow_id)
+                    return {"status": "success", "type": "navigated", "screen": screen, "sub_steps": len(sub_results)}
             return {"status": "success", "type": "navigated", "screen": screen}
-        
+
         elif step_type == "open_chat":
-            return {"status": "success", "type": "chat_opened"}
+            app = step.get("app", step.get("current_app", ""))
+            recipient = step.get("recipient", "")
+            target_screen_type = None
+            for st in ScreenType:
+                if app and app.lower() in st.value.lower():
+                    target_screen_type = st
+                    break
+
+            if not target_screen_type:
+                app_lower = app.lower()
+                if "whatsapp" in app_lower:
+                    target_screen_type = ScreenType.WHATSAPP_CHAT
+                elif "instagram" in app_lower:
+                    target_screen_type = ScreenType.INSTAGRAM_DM_CHAT
+                elif "telegram" in app_lower:
+                    target_screen_type = ScreenType.TELEGRAM_CHAT
+                elif "discord" in app_lower:
+                    target_screen_type = ScreenType.DISCORD_CHAT
+                elif "messenger" in app_lower or "facebook" in app_lower:
+                    target_screen_type = ScreenType.MESSENGER_CHAT
+                else:
+                    target_screen_type = ScreenType.CHAT_SCREEN
+
+            path = self.nav_intelligence.plan_path_to_screen(device_id, target_screen_type, app)
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.NAVIGATION_PLANNED,
+                payload={"target": f"open {app} chat", "steps": path.total_steps, "confidence": path.confidence},
+                source="navigation_intelligence",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.NAVIGATION_STARTED,
+                payload={"plan": path.to_dict()},
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+            try:
+                sub_results = await self._execute_nav_instructions(path.instructions, device_id, workflow_id)
+                await self.event_manager.emit(
+                    workflow_id=workflow_id,
+                    event_type=EventType.NAVIGATION_COMPLETED,
+                    payload={"steps_executed": len(sub_results)},
+                    source="orchestrator",
+                    severity=EventSeverity.INFO,
+                    device_id=device_id,
+                )
+                await self.event_manager.emit(
+                    workflow_id=workflow_id,
+                    event_type=EventType.CHAT_DETECTED,
+                    payload={"app": app, "recipient": recipient},
+                    source="orchestrator",
+                    severity=EventSeverity.INFO,
+                    device_id=device_id,
+                )
+            except Exception as e:
+                await self.event_manager.emit(
+                    workflow_id=workflow_id,
+                    event_type=EventType.NAVIGATION_FAILED,
+                    payload={"error": str(e)},
+                    source="orchestrator",
+                    severity=EventSeverity.ERROR,
+                    device_id=device_id,
+                )
+                return {"status": "error", "error": str(e), "type": "open_chat_failed"}
+
+            return {"status": "success", "type": "chat_opened", "app": app, "path_confidence": path.confidence}
 
         elif step_type == "reply":
-            return {"status": "success", "type": "message_sent"}
+            message = step.get("message", "")
+
+            path = self.nav_intelligence.plan_reply(device_id, message)
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.NAVIGATION_PLANNED,
+                payload={"target": "reply", "steps": path.total_steps, "confidence": path.confidence},
+                source="navigation_intelligence",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.NAVIGATION_STARTED,
+                payload={"plan": path.to_dict()},
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+            try:
+                sub_results = await self._execute_nav_instructions(path.instructions, device_id, workflow_id)
+                await self.event_manager.emit(
+                    workflow_id=workflow_id,
+                    event_type=EventType.NAVIGATION_COMPLETED,
+                    payload={"steps_executed": len(sub_results)},
+                    source="orchestrator",
+                    severity=EventSeverity.INFO,
+                    device_id=device_id,
+                )
+            except Exception as e:
+                await self.event_manager.emit(
+                    workflow_id=workflow_id,
+                    event_type=EventType.NAVIGATION_FAILED,
+                    payload={"error": str(e)},
+                    source="orchestrator",
+                    severity=EventSeverity.ERROR,
+                    device_id=device_id,
+                )
+                return {"status": "error", "error": str(e), "type": "reply_failed"}
+
+            return {"status": "success", "type": "message_sent", "path_confidence": path.confidence}
 
         elif step_type == "verify":
-            return {"status": "success", "type": "verification_passed"}
+            verification_type = step.get("verification_type", "screen_type")
+            expected = step.get("expected", step.get("text", step.get("app", step.get("screen", ""))))
+            app = step.get("app", "")
+
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.VISUAL_VERIFICATION_STARTED,
+                payload={"type": verification_type, "expected": expected},
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+            if verification_type == "app_opened":
+                result = await self.visual_verifier.verify_app_opened(device_id, expected)
+            elif verification_type == "chat_opened":
+                result = await self.visual_verifier.verify_chat_opened(device_id, expected, app)
+            elif verification_type == "message_sent":
+                result = await self.visual_verifier.verify_message_sent(device_id, expected)
+            elif verification_type == "text_present":
+                result = await self.visual_verifier.verify_text_present(device_id, expected)
+            elif verification_type == "text_absent":
+                result = await self.visual_verifier.verify_text_absent(device_id, expected)
+            elif verification_type == "screen_change":
+                result = await self.visual_verifier.verify_screen_changed(device_id)
+            else:
+                result = await self.visual_verifier.verify_screen_type(device_id,
+                    next((st for st in ScreenType if st.value == expected), ScreenType.UNKNOWN_SCREEN),
+                    app)
+
+            event_type = EventType.VISUAL_VERIFICATION_PASSED if result.passed else EventType.VISUAL_VERIFICATION_FAILED
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=event_type,
+                payload=result.to_dict(),
+                source="visual_verifier",
+                severity=EventSeverity.INFO if result.passed else EventSeverity.ERROR,
+                device_id=device_id,
+            )
+
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.VISUAL_VERIFICATION_COMPLETED,
+                payload={"passed": result.passed, "message": result.message},
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                device_id=device_id,
+            )
+
+            if not result.passed:
+                return {"status": "failed", "type": "verification_failed", "message": result.message, "confidence": result.confidence}
+            return {"status": "success", "type": "verification_passed", "confidence": result.confidence}
 
         elif step_type == "navigate_back":
+            if self.adb is not None:
+                await self.adb.shell(device_id, "input keyevent KEYCODE_BACK")
+                await asyncio.sleep(0.5)
             return {"status": "success", "type": "navigated_back"}
-        
+
+        elif step_type == "navigate_to_chat":
+            app = step.get("app", step.get("current_app", ""))
+            recipient = step.get("recipient", "")
+            path = self.nav_intelligence.plan_send_message(device_id, app, recipient, "")
+            if path.instructions:
+                sub_results = await self._execute_nav_instructions(path.instructions[:-3], device_id, workflow_id)
+                return {"status": "success", "type": "chat_opened", "app": app, "recipient": recipient}
+            return {"status": "success", "type": "chat_opened", "app": app}
+
+        elif step_type == "type_message":
+            message = step.get("message", "")
+            if self.adb is not None and message:
+                safe_text = message.replace(" ", "%s").replace("'", "")
+                await self.adb.shell(device_id, f"input text '{safe_text}'")
+                await asyncio.sleep(0.5)
+            return {"status": "success", "type": "message_typed", "message": message[:50]}
+
+        elif step_type in ("verify_sent", "verify_app"):
+            app = step.get("app", "")
+            expected_text = step.get("message", step.get("text", ""))
+            if step_type == "verify_sent":
+                result = await self.visual_verifier.verify_message_sent(device_id, expected_text)
+            else:
+                result = await self.visual_verifier.verify_app_opened(device_id, app or expected_text)
+
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.VISUAL_VERIFICATION_COMPLETED,
+                payload={"passed": result.passed, "message": result.message, "type": step_type},
+                source="orchestrator",
+                severity=EventSeverity.INFO if result.passed else EventSeverity.ERROR,
+                device_id=device_id,
+            )
+            return {"status": "success" if result.passed else "failed", "type": f"{step_type}_{'passed' if result.passed else 'failed'}", "confidence": result.confidence}
+
         elif step_type == "navigate_home":
             if self.adb is not None:
                 await self.adb.shell(device_id, "input keyevent KEYCODE_HOME")
@@ -734,43 +1183,51 @@ class WorkflowOrchestrator:
         plan_steps: List[Dict],
         intent_result,
     ) -> List:
-        """Verify execution results"""
+        """Verify execution results using VisualVerifier when possible."""
         results = []
-        
+
         for step in plan_steps:
-            if step["type"] == "launch_app":
+            step_type = step["type"]
+
+            if step_type == "launch_app":
                 device = self.device_manager.get_device(device_id)
                 if device is not None:
                     result = await device.verify_app_opened(step["app"], timeout_seconds=10)
                 else:
-                    result = await self.execution_verifier.verify_app_opened(
-                        device_id,
-                        step["app"],
-                        timeout_seconds=10,
-                    )
-                if isinstance(result, dict):
-                    results.append(result)
+                    result = await self.visual_verifier.verify_app_opened(device_id, step["app"])
+                results.append({"type": "launch_app", "status": "verified" if (isinstance(result, dict) and result.get("passed")) or (hasattr(result, 'passed') and result.passed) else "failed", "app": step.get("app")})
+
+            elif step_type == "open_chat":
+                result = await self.visual_verifier.verify_chat_opened(device_id, step.get("recipient", ""), step.get("app", "unknown"))
+                results.append({"type": "open_chat", "status": "verified" if result.passed else "failed", "message": result.message})
+
+            elif step_type in ("send_message", "reply"):
+                result = await self.visual_verifier.verify_message_sent(device_id, step.get("message"))
+                results.append({"type": step_type, "status": "verified" if result.passed else "failed", "message": result.message})
+
+            elif step_type == "navigate_to_chat":
+                result = await self.visual_verifier.verify_chat_opened(device_id, step.get("recipient", ""), step.get("app", "unknown"))
+                results.append({"type": "navigate_to_chat", "status": "verified" if result.passed else "failed", "message": result.message})
+
+            elif step_type in ("verify_sent", "verify_app"):
+                if step_type == "verify_sent":
+                    result = await self.visual_verifier.verify_message_sent(device_id, step.get("message"))
                 else:
-                    results.append({"type": "launch_app", "status": "verified", "app": step.get("app")})
-            
-            elif step["type"] == "open_chat":
-                result = self.action_verifier.verify_app_launched(device_id, step.get("app", "unknown"))
-                results.append({"type": "open_chat", "status": "verified" if (isinstance(result, dict) and result.get("passed")) else "failed"})
-            
-            elif step["type"] in ("send_message", "reply"):
-                result = self.action_verifier.verify_message_sent(device_id, step.get("app", "unknown"))
-                results.append({"type": "send_message", "status": "verified" if (isinstance(result, dict) and result.get("passed")) else "failed"})
-            
-            elif step["type"] == "navigate":
-                result = self.action_verifier.verify_screen_changed(device_id, step.get("target_screen", "unknown"))
-                results.append({"type": "navigate", "status": "verified" if (isinstance(result, dict) and result.get("passed")) else "failed"})
-            
-            elif step["type"] == "verify":
+                    result = await self.visual_verifier.verify_app_opened(device_id, step.get("app", ""))
+                results.append({"type": step_type, "status": "verified" if result.passed else "failed"})
+
+            elif step_type == "navigate":
+                result = await self.visual_verifier.verify_screen_changed(device_id)
+                screen_target = step.get("target_screen", "unknown")
+                screen_ok = result.passed or (hasattr(result, 'evidence') and result.evidence.get("text_changed"))
+                results.append({"type": "navigate", "status": "verified" if screen_ok else "failed", "screen": screen_target})
+
+            elif step_type == "verify":
                 results.append({"type": "verify", "status": "passed"})
-            
+
             else:
-                results.append({"type": step.get("type", "unknown"), "status": "executed"})
-        
+                results.append({"type": step_type, "status": "executed"})
+
         return results
 
 

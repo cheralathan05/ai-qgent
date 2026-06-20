@@ -120,6 +120,56 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Plugin registration skipped: {e}")
 
+    # Initialize Phase 3 Knowledge Components
+    try:
+        from knowledge.source_connectors import ensure_default_connectors
+        ensure_default_connectors()
+        logger.info("Knowledge source connectors initialized")
+    except Exception as e:
+        logger.warning(f"Knowledge source init failed: {e}")
+
+    try:
+        from knowledge.vector_store import get_vector_store
+        store = get_vector_store()
+        logger.info("Vector store initialized")
+    except Exception as e:
+        logger.warning(f"Vector store init failed: {e}")
+
+    try:
+        from knowledge.indexer import get_index_manager
+        idx = get_index_manager()
+        logger.info(f"Index manager initialized: {idx.get_document_count()} documents, {idx.get_chunk_count()} chunks")
+    except Exception as e:
+        logger.warning(f"Index manager init failed: {e}")
+
+    try:
+        from memory.engine import get_memory_engine
+        mem = get_memory_engine()
+        logger.info("Memory engine initialized")
+    except Exception as e:
+        logger.warning(f"Memory engine init failed: {e}")
+
+    try:
+        from knowledge_graph.engine import get_knowledge_graph
+        kg = get_knowledge_graph()
+        logger.info(f"Knowledge graph initialized: {kg.get_entity_count()} entities")
+    except Exception as e:
+        logger.warning(f"Knowledge graph init failed: {e}")
+
+    try:
+        from context.engine import get_context_engine
+        get_context_engine()
+        logger.info("Context engine initialized")
+    except Exception as e:
+        logger.warning(f"Context engine init failed: {e}")
+
+    try:
+        from agents.knowledge_agent import get_knowledge_agent
+        get_knowledge_agent()
+        logger.info("Knowledge agent initialized")
+    except Exception as e:
+        logger.warning(f"Knowledge agent init failed: {e}")
+
     logger.info("All services initialized")
     
     yield
@@ -344,9 +394,149 @@ async def websocket_memory(websocket: WebSocket, client_id: str):
         logger.info(f"Memory WS client disconnected: {client_id}")
 
 
+# ==================== Phase 3 WebSocket Channels ====================
+
+@app.websocket("/ws/knowledge/{client_id}")
+async def websocket_knowledge(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            import json as _json
+            try:
+                payload = _json.loads(data)
+            except Exception:
+                payload = {"query": data}
+            query = payload.get("query", data if isinstance(data, str) else "")
+            from agents.knowledge_agent import get_knowledge_agent
+            agent = get_knowledge_agent()
+            response = await agent.search(query)
+            await websocket.send_json({
+                "event": "knowledge_search",
+                "client_id": client_id,
+                "query": query,
+                "total": response.total,
+                "results": [
+                    {"id": r.id, "text": r.text[:300], "score": r.score,
+                     "file_name": r.file_name, "source_type": r.source_type}
+                    for r in response.results[:10]
+                ],
+            })
+    except Exception:
+        pass
+    finally:
+        logger.info(f"Knowledge WS client disconnected: {client_id}")
+
+
+@app.websocket("/ws/search/{client_id}")
+async def websocket_search(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            import json as _json
+            try:
+                payload = _json.loads(data)
+            except Exception:
+                payload = {"query": data}
+            query = payload.get("query", data if isinstance(data, str) else "")
+            search_type = payload.get("search_type", "hybrid")
+            from knowledge.search_engine import get_search_engine
+            engine = get_search_engine()
+            response = await engine.search(query, search_type=search_type)
+            await websocket.send_json({
+                "event": "search_completed",
+                "client_id": client_id,
+                "query": query,
+                "search_type": search_type,
+                "total": response.total,
+                "time_ms": response.time_ms,
+                "results": [
+                    {"id": r.id, "text": r.text[:300], "score": r.score,
+                     "file_name": r.file_name, "source_type": r.source_type}
+                    for r in response.results[:10]
+                ],
+            })
+    except Exception:
+        pass
+    finally:
+        logger.info(f"Search WS client disconnected: {client_id}")
+
+
+@app.websocket("/ws/rag/{client_id}")
+async def websocket_rag(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            import json as _json
+            try:
+                payload = _json.loads(data)
+            except Exception:
+                payload = {"query": data}
+            query = payload.get("query", data if isinstance(data, str) else "")
+            from rag.engine import get_rag_engine
+            rag = get_rag_engine()
+            response = await rag.answer(query)
+            await websocket.send_json({
+                "event": "rag_answer",
+                "client_id": client_id,
+                "query": query,
+                "answer": response.answer,
+                "confidence": response.confidence,
+                "citations": [
+                    {"document": c.document_name, "score": c.score,
+                     "source_type": c.source_type, "text_preview": c.text[:200]}
+                    for c in response.citations
+                ],
+            })
+    except Exception:
+        pass
+    finally:
+        logger.info(f"RAG WS client disconnected: {client_id}")
+
+
+@app.websocket("/ws/assistant/{client_id}")
+async def websocket_assistant(websocket: WebSocket, client_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            import json as _json
+            try:
+                payload = _json.loads(data)
+            except Exception:
+                payload = {"message": data}
+            message = payload.get("message", data if isinstance(data, str) else "")
+            from agents.knowledge_agent import get_knowledge_agent
+            agent = get_knowledge_agent()
+            response = await agent.answer(message)
+            await websocket.send_json({
+                "event": "assistant_response",
+                "client_id": client_id,
+                "message": message,
+                "answer": response.answer,
+                "sources": response.sources,
+                "confidence": response.confidence,
+                "suggestions": response.suggestions,
+            })
+    except Exception:
+        pass
+    finally:
+        logger.info(f"Assistant WS client disconnected: {client_id}")
+
+
 # Register Phase 2 API router
 from api.phase2 import router as phase2_router
 app.include_router(phase2_router, prefix="/api/phase2")
+
+# Register Phase 3 API router
+from api.phase3 import router as phase3_router
+app.include_router(phase3_router)
+
+# Register Phase 3 API router
+from api.phase3 import router as phase3_router
+app.include_router(phase3_router)
 
 
 # Health check endpoint

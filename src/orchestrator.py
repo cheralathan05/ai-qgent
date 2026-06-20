@@ -42,6 +42,15 @@ from visual_understanding import get_visual_understanding
 from action_verification import get_action_verifier, ActionVerificationResult
 from observability import get_metrics_collector, WorkflowMetrics
 
+# Phase 3 imports
+from knowledge.search_engine import get_search_engine
+from knowledge.source_connectors import ensure_default_connectors
+from knowledge_graph.engine import get_knowledge_graph
+from memory.engine import get_memory_engine
+from context.engine import get_context_engine
+from agents.knowledge_agent import get_knowledge_agent
+from agents.reasoning_agent import get_reasoning_agent
+
 # Phase 2 imports
 from navigation.navigation_intelligence import get_navigation_intelligence, NavigationInstruction, NavigationStepType, NavigationPath
 from verification.visual_verifier import get_visual_verifier, VisualVerificationType, VisualVerificationResult
@@ -93,6 +102,14 @@ class WorkflowOrchestrator:
         self.visual_understanding = get_visual_understanding()
         self.action_verifier = get_action_verifier()
         self.metrics_collector = get_metrics_collector()
+
+        # Phase 3 components
+        self.knowledge_search = get_search_engine()
+        self.knowledge_graph = get_knowledge_graph()
+        self.memory_engine = get_memory_engine()
+        self.context_engine = get_context_engine()
+        self.knowledge_agent = get_knowledge_agent()
+        self.reasoning_agent = get_reasoning_agent()
 
         # Phase 2 components
         self.nav_intelligence = get_navigation_intelligence()
@@ -203,6 +220,66 @@ class WorkflowOrchestrator:
                 user_id=user_id,
             )
             
+            # ==================== Phase 3: Knowledge Query Handling ====================
+            is_knowledge_query = detected_intent in ("search", "web_search", "ask", "find", "knowledge")
+            is_find_file = any(word in command.lower() for word in ["find", "where", "locate", "search"]) and \
+                           any(word in command.lower() for word in ["file", "note", "document", "pdf", "downloads"])
+            if is_knowledge_query or is_find_file:
+                try:
+                    ensure_default_connectors()
+                    if is_find_file:
+                        knowledge_result = await self.knowledge_agent.find_file(command)
+                    else:
+                        knowledge_result = await self.knowledge_agent.answer(command)
+
+                    self.memory_engine.store_conversation(
+                        user_id=user_id, session_id=workflow_id,
+                        user_message=command,
+                        assistant_message=knowledge_result.answer,
+                    )
+
+                    self.context_engine.add_search(command)
+                    if knowledge_result.sources:
+                        for src in knowledge_result.sources[:3]:
+                            if src.get("file_name"):
+                                self.context_engine.add_document(
+                                    src["file_name"], src.get("file_path", "")
+                                )
+
+                    await self.event_manager.emit(
+                        workflow_id=workflow_id,
+                        event_type=EventType.COMMAND_RECEIVED,
+                        payload={
+                            "knowledge_response": knowledge_result.answer,
+                            "sources": knowledge_result.sources,
+                            "type": "knowledge",
+                        },
+                        source="knowledge_agent",
+                        severity=EventSeverity.INFO,
+                        user_id=user_id,
+                    )
+
+                    update_workflow(
+                        workflow_id,
+                        status=WorkflowStatus.COMPLETED,
+                        result={"knowledge_result": knowledge_result.answer, "sources": knowledge_result.sources},
+                        end_time=datetime.utcnow(),
+                        duration_ms=int((datetime.utcnow() - start_time).total_seconds() * 1000),
+                    )
+
+                    return {
+                        "success": True,
+                        "workflow_id": workflow_id,
+                        "intent": "knowledge_query",
+                        "status": "completed",
+                        "knowledge_answer": knowledge_result.answer,
+                        "sources": knowledge_result.sources,
+                        "actions": knowledge_result.actions,
+                        "duration_ms": int((datetime.utcnow() - start_time).total_seconds() * 1000),
+                    }
+                except Exception as ke:
+                    logger.warning(f"Knowledge query failed (falling through to device): {ke}")
+
             # ==================== Stage 2: Device Check ====================
             await self.event_manager.emit(
                 workflow_id=workflow_id,

@@ -472,6 +472,116 @@ class WorkflowMetrics(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class KnowledgeDocument(Base):
+    """Indexed knowledge document"""
+    __tablename__ = "knowledge_documents"
+
+    id = Column(String(255), primary_key=True)
+    file_name = Column(String(500), nullable=False)
+    file_path = Column(Text, nullable=True)
+    source_type = Column(String(100), nullable=False, index=True)
+    source_name = Column(String(255), nullable=True)
+    mime_type = Column(String(100), nullable=True)
+    file_size = Column(Integer, default=0)
+    chunk_count = Column(Integer, default=0)
+    checksum = Column(String(64), nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    modified_at = Column(DateTime, nullable=True)
+    indexed_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KnowledgeChunk(Base):
+    """Indexed text chunk"""
+    __tablename__ = "knowledge_chunks"
+
+    id = Column(String(255), primary_key=True)
+    document_id = Column(String(255), ForeignKey('knowledge_documents.id'), nullable=False, index=True)
+    text = Column(Text, nullable=False)
+    chunk_index = Column(Integer, default=0)
+    metadata_json = Column(JSON, default=dict)
+    embedding_id = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KnowledgeSource(Base):
+    """Configured knowledge source"""
+    __tablename__ = "knowledge_sources"
+
+    id = Column(String(255), primary_key=True)
+    name = Column(String(255), nullable=False)
+    source_type = Column(String(100), nullable=False, index=True)
+    is_connected = Column(Boolean, default=False)
+    config_json = Column(JSON, default=dict)
+    last_sync_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KnowledgeGraphEntity(Base):
+    """Knowledge graph entity"""
+    __tablename__ = "knowledge_graph_entities"
+
+    id = Column(String(255), primary_key=True)
+    name = Column(String(500), nullable=False, index=True)
+    entity_type = Column(String(100), nullable=False, index=True)
+    properties_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class KnowledgeGraphRelationship(Base):
+    """Knowledge graph relationship"""
+    __tablename__ = "knowledge_graph_relationships"
+
+    id = Column(String(255), primary_key=True)
+    source_id = Column(String(255), ForeignKey('knowledge_graph_entities.id'), nullable=False, index=True)
+    target_id = Column(String(255), ForeignKey('knowledge_graph_entities.id'), nullable=False, index=True)
+    relationship_type = Column(String(100), nullable=False, index=True)
+    properties_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MemoryRecord(Base):
+    """Memory storage record"""
+    __tablename__ = "memory_records"
+
+    id = Column(String(255), primary_key=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    session_id = Column(String(255), nullable=True, index=True)
+    memory_type = Column(String(50), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    metadata_json = Column(JSON, default=dict)
+    importance = Column(Float, default=0.5)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    expires_at = Column(DateTime, nullable=True)
+
+
+class ConversationRecord(Base):
+    """Conversation history record"""
+    __tablename__ = "conversation_records"
+
+    id = Column(String(255), primary_key=True)
+    user_id = Column(String(255), nullable=False, index=True)
+    session_id = Column(String(255), nullable=True, index=True)
+    role = Column(String(50), nullable=False)
+    content = Column(Text, nullable=False)
+    metadata_json = Column(JSON, default=dict)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class SearchLog(Base):
+    """Search query log"""
+    __tablename__ = "search_logs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    query = Column(Text, nullable=False)
+    search_type = Column(String(50), nullable=False)
+    total_results = Column(Integer, default=0)
+    time_ms = Column(Float, nullable=True)
+    user_id = Column(String(255), nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class FailureRecord(Base):
     """Track all failures with recovery info"""
     __tablename__ = "failure_records"

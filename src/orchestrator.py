@@ -779,7 +779,7 @@ class WorkflowOrchestrator:
             await self.event_manager.emit(
                 workflow_id=workflow_id,
                 event_type=EventType.OCR_COMPLETED,
-                payload={"text_length": len(ocr.full_text), "words": len(ocr.text_blocks)},
+                payload={"text_length": len(ocr.full_text), "words": len(ocr.texts)},
                 source="orchestrator",
                 severity=EventSeverity.INFO,
                 device_id=device_id,

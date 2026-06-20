@@ -298,6 +298,40 @@ async def _execute_user_command(
     resolved_user_id = user_id or DEFAULT_USER_ID
     resolved_device_id = device_id or await _resolve_adb_device() or "7f0deaf6"
 
+async def _update_workflow_status(session, workflow_id: str, status: WorkflowStatus, result: Optional[Dict] = None, error: Optional[str] = None):
+    """Update workflow status in database."""
+    if not workflow_id:
+        return
+    try:
+        workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
+        if workflow:
+            workflow.status = status
+            workflow.end_time = datetime.utcnow()
+            workflow.duration_ms = int((datetime.utcnow() - (workflow.start_time or datetime.utcnow())).total_seconds() * 1000)
+            if result:
+                workflow.result = result
+            if error:
+                workflow.error = error
+            session.commit()
+    except Exception as e:
+        logger.warning(f"Failed to update workflow {workflow_id} status: {e}")
+
+
+async def _execute_user_command(
+    *,
+    session,
+    command: str,
+    user_id: Optional[str] = None,
+    device_id: Optional[str] = None,
+    voice_input: bool = False,
+    workflow_id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Route user command through the intent pipeline and execute on the real device."""
+    orchestrator = get_workflow_engine(session=session)
+    resolved_user_id = user_id or DEFAULT_USER_ID
+    resolved_device_id = device_id or await _resolve_adb_device() or "7f0deaf6"
+
     # Emit CommandReceived
     await _emit_event(
         workflow_id, EventType.COMMAND_RECEIVED,
@@ -327,6 +361,7 @@ async def _execute_user_command(
             {"error": "No Android device connected via ADB", "intent": intent},
             severity="error", user_id=resolved_user_id,
         )
+        await _update_workflow_status(session, workflow_id, WorkflowStatus.FAILED, error="No Android device connected via ADB")
         return {"success": False, "intent": intent, "error": "No Android device connected via ADB"}
     real_device_id = connected_devices[0]["serial"]
 
@@ -337,270 +372,327 @@ async def _execute_user_command(
         device_id=real_device_id,
     )
 
-    # 3. Execute the corresponding ADB action for the detected intent
-    if intent == "battery_status":
-        r = await _adb_action(adb, real_device_id, "get_battery_level")
-        result = {**r, "intent": "battery_status", "battery_level": r.get("adb_output")}
-        await _emit_event(
-            workflow_id, EventType.WORKFLOW_COMPLETED,
-            {"intent": "battery_status", "battery_level": r.get("adb_output"), "success": r.get("success")},
-            user_id=resolved_user_id, device_id=real_device_id,
-        )
-        return result
-
-    if intent == "foreground_app":
-        r = await _adb_action(adb, real_device_id, "get_foreground_app")
-        result = {**r, "intent": "foreground_app", "foreground_app": r.get("adb_output")}
-        await _emit_event(
-            workflow_id, EventType.WORKFLOW_COMPLETED,
-            {"intent": "foreground_app", "foreground_app": r.get("adb_output"), "success": r.get("success")},
-            user_id=resolved_user_id, device_id=real_device_id,
-        )
-        return result
-
-    if intent == "take_screenshot":
+    # Update workflow intent and status
+    if workflow_id:
         try:
-            png_data = await adb.screencap(real_device_id, "")
-            filename = f"screenshot_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png"
-            save_dir = os.path.join(os.path.dirname(__file__), "..", "data", "screenshots")
-            os.makedirs(save_dir, exist_ok=True)
-            filepath = os.path.join(save_dir, filename)
-            with open(filepath, "wb") as f:
-                f.write(png_data)
-            result = {"success": True, "intent": "take_screenshot", "status": "completed", "path": filepath}
+            workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
+            if workflow:
+                workflow.intent = intent
+                session.commit()
+        except Exception:
+            pass
+
+    # 3. Execute the corresponding ADB action for the detected intent
+    try:
+        if intent == "battery_status":
+            r = await _adb_action(adb, real_device_id, "get_battery_level")
+            result = {**r, "intent": "battery_status", "battery_level": r.get("adb_output")}
             await _emit_event(
                 workflow_id, EventType.WORKFLOW_COMPLETED,
-                {"intent": "take_screenshot", "path": filepath},
+                {"intent": "battery_status", "battery_level": r.get("adb_output"), "success": r.get("success")},
                 user_id=resolved_user_id, device_id=real_device_id,
             )
+            await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
             return result
-        except Exception as exc:
-            await _emit_event(
-                workflow_id, EventType.WORKFLOW_FAILED,
-                {"intent": "take_screenshot", "error": str(exc)},
-                severity="error", user_id=resolved_user_id, device_id=real_device_id,
-            )
-            return {"success": False, "intent": "take_screenshot", "error": str(exc)}
 
-    if intent == "open_app":
-        app_name = slots.get("app")
-        if app_name:
-            launch_service = get_app_launch_service(adb_service=adb)
-            launch_result = await launch_service.launch_app(real_device_id, app_name)
-            r = launch_result.to_dict()
-            success = r.get("success", False)
-            status = "completed" if success else "verification_failed"
-            if success:
+        if intent == "foreground_app":
+            r = await _adb_action(adb, real_device_id, "get_foreground_app")
+            result = {**r, "intent": "foreground_app", "foreground_app": r.get("adb_output")}
+            await _emit_event(
+                workflow_id, EventType.WORKFLOW_COMPLETED,
+                {"intent": "foreground_app", "foreground_app": r.get("adb_output"), "success": r.get("success")},
+                user_id=resolved_user_id, device_id=real_device_id,
+            )
+            await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
+            return result
+
+        if intent == "take_screenshot":
+            try:
+                png_data = await adb.screencap(real_device_id, "")
+                filename = f"screenshot_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.png"
+                save_dir = os.path.join(os.path.dirname(__file__), "..", "data", "screenshots")
+                os.makedirs(save_dir, exist_ok=True)
+                filepath = os.path.join(save_dir, filename)
+                with open(filepath, "wb") as f:
+                    f.write(png_data)
+                result = {"success": True, "intent": "take_screenshot", "status": "completed", "path": filepath}
                 await _emit_event(
                     workflow_id, EventType.WORKFLOW_COMPLETED,
-                    {"intent": "open_app", "app": app_name, "foreground_verified": r.get("foreground_app")},
+                    {"intent": "take_screenshot", "path": filepath},
                     user_id=resolved_user_id, device_id=real_device_id,
                 )
-            else:
+                await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED, result=result)
+                return result
+            except Exception as exc:
                 await _emit_event(
-                    workflow_id, EventType.VERIFICATION_FAILED,
-                    {"intent": "open_app", "app": app_name, "error": r.get("error")},
+                    workflow_id, EventType.WORKFLOW_FAILED,
+                    {"intent": "take_screenshot", "error": str(exc)},
                     severity="error", user_id=resolved_user_id, device_id=real_device_id,
                 )
-            return {**r, "intent": "open_app", "target": app_name, "status": status}
+                await _update_workflow_status(session, workflow_id, WorkflowStatus.FAILED, error=str(exc))
+                return {"success": False, "intent": "take_screenshot", "error": str(exc)}
 
-    if intent == "close_app":
-        app_name = slots.get("app")
-        if app_name:
-            launch_service = get_app_launch_service(adb_service=adb)
-            r = await launch_service.force_stop_app(real_device_id, app_name)
-            return {**r, "intent": "close_app", "target": app_name}
+        if intent == "open_app":
+            app_name = slots.get("app")
+            if app_name:
+                launch_service = get_app_launch_service(adb_service=adb)
+                launch_result = await launch_service.launch_app(real_device_id, app_name)
+                r = launch_result.to_dict()
+                success = r.get("success", False)
+                status = "completed" if success else "verification_failed"
+                if success:
+                    await _emit_event(
+                        workflow_id, EventType.WORKFLOW_COMPLETED,
+                        {"intent": "open_app", "app": app_name, "foreground_verified": r.get("foreground_app")},
+                        user_id=resolved_user_id, device_id=real_device_id,
+                    )
+                else:
+                    await _emit_event(
+                        workflow_id, EventType.VERIFICATION_FAILED,
+                        {"intent": "open_app", "app": app_name, "error": r.get("error")},
+                        severity="error", user_id=resolved_user_id, device_id=real_device_id,
+                    )
+                result = {**r, "intent": "open_app", "target": app_name, "status": status}
+                await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if success else WorkflowStatus.FAILED, result=result)
+                return result
 
-    if intent == "open_settings":
-        section = slots.get("section")
-        r = await _adb_action(adb, real_device_id, "open_app", "settings")
-        return {**r, "intent": "open_settings", "target": section or "general"}
+        if intent == "close_app":
+            app_name = slots.get("app")
+            if app_name:
+                launch_service = get_app_launch_service(adb_service=adb)
+                r = await launch_service.force_stop_app(real_device_id, app_name)
+                result = {**r, "intent": "close_app", "target": app_name}
+                await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED, result=result)
+                return result
 
-    if intent == "send_message":
-        recipient = slots.get("recipient")
-        message = slots.get("message")
-        app = slots.get("app", "whatsapp")
-        if recipient:
-            from services.contact_store import get_contact_store
-            contact_store = get_contact_store()
-            contact = contact_store.resolve(recipient)
-            phone = contact.phone if contact else None
-            resolved = contact.display_name if contact else recipient
-            actions = []
-            if app == "whatsapp" and phone:
-                try:
-                    from services.app_launch import get_app_launch_service
-                    launch_svc = get_app_launch_service(adb_service=adb)
-                    wa_pkg = await adb.resolve_package_dynamic(real_device_id, "whatsapp")
-                    wa_pkg = wa_pkg or "com.whatsapp"
-                    encoded = "".join(f"%{hex(ord(c))[2:].upper()}" for c in message) if message else ""
-                    intent_url = f"smsto:{phone}"
-                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "{intent_url}" -n "{wa_pkg}/.Conversation"')
-                    actions.append("opened whatsapp chat via deep link")
-                    if message:
-                        await asyncio.sleep(2)
+        if intent == "open_settings":
+            section = slots.get("section")
+            r = await _adb_action(adb, real_device_id, "open_app", "settings")
+            result = {**r, "intent": "open_settings", "target": section or "general"}
+            await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
+            return result
+
+        if intent == "send_message":
+            recipient = slots.get("recipient")
+            message = slots.get("message")
+            app = slots.get("app", "whatsapp")
+            if recipient:
+                from services.contact_store import get_contact_store
+                contact_store = get_contact_store()
+                contact = contact_store.resolve(recipient)
+                phone = contact.phone if contact else None
+                resolved = contact.display_name if contact else recipient
+                actions = []
+                message_verified = False
+                if app == "whatsapp" and phone:
+                    try:
+                        from services.app_launch import get_app_launch_service
+                        launch_svc = get_app_launch_service(adb_service=adb)
+                        wa_pkg = await adb.resolve_package_dynamic(real_device_id, "whatsapp")
+                        wa_pkg = wa_pkg or "com.whatsapp"
+                        intent_url = f"smsto:{phone}"
+                        r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "{intent_url}" -n "{wa_pkg}/.Conversation"')
+                        actions.append("opened whatsapp chat via deep link")
+                        if message:
+                            await asyncio.sleep(2)
+                            try:
+                                await adb.input_text(real_device_id, message)
+                                actions.append("typed message")
+                                await asyncio.sleep(0.5)
+                                await adb.press_key(real_device_id, 66)
+                                actions.append("pressed send")
+                            except Exception:
+                                pass
+                        # Verify message was sent by capturing screen and checking OCR
                         try:
-                            await adb.input_text(real_device_id, message)
-                            actions.append("typed message")
-                            await asyncio.sleep(0.5)
-                            await adb.press_key(real_device_id, 66)
-                            actions.append("pressed send")
+                            await asyncio.sleep(1)
+                            capture_result = await get_screen_capture_service().capture_from_adb(real_device_id)
+                            if capture_result.success and capture_result.image:
+                                ocr_result = await get_ocr_service().extract_text(capture_result.image)
+                                if message and message.lower() in ocr_result.full_text.lower():
+                                    message_verified = True
+                                elif len(ocr_result.texts) > 0:
+                                    message_verified = True
                         except Exception:
                             pass
-                    # Verify message was sent by capturing screen and checking OCR
-                    message_verified = False
+                        await _emit_event(
+                            workflow_id, EventType.WORKFLOW_COMPLETED if message_verified else EventType.WORKFLOW_FAILED,
+                            {"intent": "send_message", "recipient": resolved, "app": app, "message_verified": message_verified, "actions": actions},
+                            severity="info" if message_verified else "error",
+                            user_id=resolved_user_id, device_id=real_device_id,
+                        )
+                        result = {
+                            "success": message_verified, "intent": "send_message", "target": resolved,
+                            "app": app, "message": message, "actions": actions, "phone": phone,
+                            "message_verified": message_verified,
+                        }
+                        await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if message_verified else WorkflowStatus.FAILED, result=result)
+                        return result
+                    except Exception as exc:
+                        actions.append(f"deep link failed: {exc}")
+                r = await _adb_action(adb, real_device_id, "open_app", app)
+                actions = [f"opened {app}"]
+                if message:
                     try:
-                        await asyncio.sleep(1)
-                        capture_result = await get_screen_capture_service().capture_from_adb(real_device_id)
-                        if capture_result.success and capture_result.image:
-                            ocr_result = await get_ocr_service().extract_text(capture_result.image)
-                            if message and message.lower() in ocr_result.full_text.lower():
-                                message_verified = True
-                            elif len(ocr_result.texts) > 0:
-                                message_verified = True
+                        await adb.input_text(real_device_id, message)
+                        actions.append("typed message")
+                        await asyncio.sleep(0.5)
+                        await adb.press_key(real_device_id, 66)
+                        actions.append("pressed send")
                     except Exception:
                         pass
-                    await _emit_event(
-                        workflow_id, EventType.WORKFLOW_COMPLETED if message_verified else EventType.WORKFLOW_FAILED,
-                        {"intent": "send_message", "recipient": resolved, "app": app, "message_verified": message_verified, "actions": actions},
-                        severity="info" if message_verified else "error",
-                        user_id=resolved_user_id, device_id=real_device_id,
-                    )
-                    return {
-                        "success": message_verified, "intent": "send_message", "target": resolved,
-                        "app": app, "message": message, "actions": actions, "phone": phone,
-                        "message_verified": message_verified,
-                    }
-                except Exception as exc:
-                    actions.append(f"deep link failed: {exc}")
-            r = await _adb_action(adb, real_device_id, "open_app", app)
-            actions = [f"opened {app}"]
-            if message:
+                # Verify after send
                 try:
-                    await adb.input_text(real_device_id, message)
-                    actions.append("typed message")
-                    await asyncio.sleep(0.5)
-                    await adb.press_key(real_device_id, 66)
-                    actions.append("pressed send")
+                    await asyncio.sleep(1)
+                    capture_result = await get_screen_capture_service().capture_from_adb(real_device_id)
+                    if capture_result.success and capture_result.image:
+                        ocr_result = await get_ocr_service().extract_text(capture_result.image)
+                        if message and message.lower() in ocr_result.full_text.lower():
+                            message_verified = True
+                        elif len(ocr_result.texts) > 0:
+                            message_verified = True
                 except Exception:
                     pass
-            await _emit_event(
-                workflow_id, EventType.WORKFLOW_COMPLETED,
-                {"intent": "send_message", "recipient": resolved, "app": app, "actions": actions},
-                user_id=resolved_user_id, device_id=real_device_id,
-            )
-            return {**r, "intent": "send_message", "target": resolved, "app": app, "message": message, "actions": actions}
-
-    if intent == "open_chat":
-        recipient = slots.get("recipient")
-        app = slots.get("app", "instagram")
-        if recipient:
-            from services.contact_store import get_contact_store
-            contact = get_contact_store().resolve(recipient)
-            resolved = contact.display_name if contact else recipient
-            phone = contact.phone if contact else None
-            if app == "whatsapp" and phone:
-                try:
-                    wa_pkg = await adb.resolve_package_dynamic(real_device_id, "whatsapp")
-                    wa_pkg = wa_pkg or "com.whatsapp"
-                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "smsto:{phone}" -n "{wa_pkg}/.Conversation"')
-                    await _emit_event(
-                        workflow_id, EventType.WORKFLOW_COMPLETED,
-                        {"intent": "open_chat", "recipient": resolved, "app": app, "phone": phone},
-                        user_id=resolved_user_id, device_id=real_device_id,
-                    )
-                    return {"success": True, "intent": "open_chat", "target": resolved, "app": app, "phone": phone}
-                except Exception:
-                    pass
-            r = await _adb_action(adb, real_device_id, "open_app", app)
-            await _emit_event(
-                workflow_id, EventType.WORKFLOW_COMPLETED,
-                {"intent": "open_chat", "recipient": resolved, "app": app},
-                user_id=resolved_user_id, device_id=real_device_id,
-            )
-            return {**r, "intent": "open_chat", "target": resolved, "app": app}
-
-    if intent == "call_contact":
-        recipient = slots.get("recipient")
-        if recipient:
-            from services.contact_store import get_contact_store
-            contact = get_contact_store().resolve(recipient)
-            phone = contact.phone if contact else None
-            resolved = contact.display_name if contact else recipient
-            if phone:
-                try:
-                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.DIAL -d "tel:{phone}"')
-                    await _emit_event(
-                        workflow_id, EventType.WORKFLOW_COMPLETED,
-                        {"intent": "call_contact", "recipient": resolved, "phone": phone},
-                        user_id=resolved_user_id, device_id=real_device_id,
-                    )
-                    return {"success": True, "intent": "call_contact", "target": resolved, "phone": phone}
-                except Exception:
-                    pass
-            r = await _adb_action(adb, real_device_id, "open_app", "phone")
-            await _emit_event(
-                workflow_id, EventType.WORKFLOW_COMPLETED,
-                {"intent": "call_contact", "recipient": resolved},
-                user_id=resolved_user_id, device_id=real_device_id,
-            )
-            return {**r, "intent": "call_contact", "target": resolved}
-
-    if intent in ("search", "web_search"):
-        query = slots.get("query")
-        app = slots.get("app")
-        if query:
-            import urllib.parse
-            enc = urllib.parse.quote(query)
-            # YouTube search via native app interaction
-            if app and "youtube" in app.lower():
-                r = await _search_youtube(adb, real_device_id, query)
-                result = {**r, "intent": "search", "target": "youtube", "query": query}
                 await _emit_event(
-                    workflow_id, EventType.WORKFLOW_COMPLETED if r.get("success") else EventType.WORKFLOW_FAILED,
-                    {"intent": "search", "target": "youtube", "query": query, "success": r.get("success")},
-                    severity="info" if r.get("success") else "error",
+                    workflow_id, EventType.WORKFLOW_COMPLETED if message_verified else EventType.WORKFLOW_FAILED,
+                    {"intent": "send_message", "recipient": resolved, "app": app, "actions": actions, "message_verified": message_verified},
                     user_id=resolved_user_id, device_id=real_device_id,
                 )
+                result = {**r, "intent": "send_message", "target": resolved, "app": app, "message": message, "actions": actions, "message_verified": message_verified}
+                await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if message_verified else WorkflowStatus.FAILED, result=result)
                 return result
-            # General web search via Google
-            if not app or intent == "web_search":
-                url = f"https://www.google.com/search?q={enc}"
-                r = await _adb_action(adb, real_device_id, "open_url", url)
-                result = {**r, "intent": "web_search", "query": query}
+
+        if intent == "open_chat":
+            recipient = slots.get("recipient")
+            app = slots.get("app", "instagram")
+            if recipient:
+                from services.contact_store import get_contact_store
+                contact = get_contact_store().resolve(recipient)
+                resolved = contact.display_name if contact else recipient
+                phone = contact.phone if contact else None
+                if app == "whatsapp" and phone:
+                    try:
+                        wa_pkg = await adb.resolve_package_dynamic(real_device_id, "whatsapp")
+                        wa_pkg = wa_pkg or "com.whatsapp"
+                        r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "smsto:{phone}" -n "{wa_pkg}/.Conversation"')
+                        await _emit_event(
+                            workflow_id, EventType.WORKFLOW_COMPLETED,
+                            {"intent": "open_chat", "recipient": resolved, "app": app, "phone": phone},
+                            user_id=resolved_user_id, device_id=real_device_id,
+                        )
+                        result = {"success": True, "intent": "open_chat", "target": resolved, "app": app, "phone": phone}
+                        await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED, result=result)
+                        return result
+                    except Exception:
+                        pass
+                r = await _adb_action(adb, real_device_id, "open_app", app)
+                result = {**r, "intent": "open_chat", "target": resolved, "app": app}
                 await _emit_event(
                     workflow_id, EventType.WORKFLOW_COMPLETED,
-                    {"intent": "web_search", "query": query},
+                    {"intent": "open_chat", "recipient": resolved, "app": app},
                     user_id=resolved_user_id, device_id=real_device_id,
                 )
+                await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
                 return result
-        # Fallback: just open the target app
-        target_app = app if app else "chrome"
-        r = await _adb_action(adb, real_device_id, "open_app", target_app)
-        result = {**r, "intent": "search", "target": target_app, "query": query}
-        await _emit_event(
-            workflow_id, EventType.WORKFLOW_COMPLETED,
-            {"intent": "search", "target": target_app, "query": query},
-            user_id=resolved_user_id, device_id=real_device_id,
-        )
-        return result
 
-    if intent == "open_folder":
-        folder = slots.get("folder", "downloads")
-        r = await _adb_action(adb, real_device_id, "open_app", "files")
-        return {**r, "intent": "open_folder", "target": folder}
+        if intent == "call_contact":
+            recipient = slots.get("recipient")
+            if recipient:
+                from services.contact_store import get_contact_store
+                contact = get_contact_store().resolve(recipient)
+                phone = contact.phone if contact else None
+                resolved = contact.display_name if contact else recipient
+                if phone:
+                    try:
+                        r = await adb.shell(real_device_id, f'am start -a android.intent.action.DIAL -d "tel:{phone}"')
+                        result = {"success": True, "intent": "call_contact", "target": resolved, "phone": phone}
+                        await _emit_event(
+                            workflow_id, EventType.WORKFLOW_COMPLETED,
+                            {"intent": "call_contact", "recipient": resolved, "phone": phone},
+                            user_id=resolved_user_id, device_id=real_device_id,
+                        )
+                        await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED, result=result)
+                        return result
+                    except Exception:
+                        pass
+                r = await _adb_action(adb, real_device_id, "open_app", "phone")
+                result = {**r, "intent": "call_contact", "target": resolved}
+                await _emit_event(
+                    workflow_id, EventType.WORKFLOW_COMPLETED,
+                    {"intent": "call_contact", "recipient": resolved},
+                    user_id=resolved_user_id, device_id=real_device_id,
+                )
+                await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
+                return result
 
-    # 4. Fall through to orchestrator for unknown intents
-    try:
-        return await orchestrator.execute_command(
-            user_id=resolved_user_id,
-            command=command,
-            device_id=real_device_id,
-            workflow_id=workflow_id,
-            voice_input=voice_input,
-        )
+        if intent in ("search", "web_search"):
+            query = slots.get("query")
+            app = slots.get("app")
+            if query:
+                import urllib.parse
+                enc = urllib.parse.quote(query)
+                if app and "youtube" in app.lower():
+                    r = await _search_youtube(adb, real_device_id, query)
+                    result = {**r, "intent": "search", "target": "youtube", "query": query}
+                    await _emit_event(
+                        workflow_id, EventType.WORKFLOW_COMPLETED if r.get("success") else EventType.WORKFLOW_FAILED,
+                        {"intent": "search", "target": "youtube", "query": query, "success": r.get("success")},
+                        severity="info" if r.get("success") else "error",
+                        user_id=resolved_user_id, device_id=real_device_id,
+                    )
+                    await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
+                    return result
+                if not app or intent == "web_search":
+                    url = f"https://www.google.com/search?q={enc}"
+                    r = await _adb_action(adb, real_device_id, "open_url", url)
+                    result = {**r, "intent": "web_search", "query": query}
+                    await _emit_event(
+                        workflow_id, EventType.WORKFLOW_COMPLETED,
+                        {"intent": "web_search", "query": query},
+                        user_id=resolved_user_id, device_id=real_device_id,
+                    )
+                    await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
+                    return result
+            target_app = app if app else "chrome"
+            r = await _adb_action(adb, real_device_id, "open_app", target_app)
+            result = {**r, "intent": "search", "target": target_app, "query": query}
+            await _emit_event(
+                workflow_id, EventType.WORKFLOW_COMPLETED,
+                {"intent": "search", "target": target_app, "query": query},
+                user_id=resolved_user_id, device_id=real_device_id,
+            )
+            await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
+            return result
+
+        if intent == "open_folder":
+            folder = slots.get("folder", "downloads")
+            r = await _adb_action(adb, real_device_id, "open_app", "files")
+            result = {**r, "intent": "open_folder", "target": folder}
+            await _update_workflow_status(session, workflow_id, WorkflowStatus.COMPLETED if r.get("success") else WorkflowStatus.FAILED, result=result)
+            return result
+
+        # 4. Fall through to orchestrator for unknown intents
+        try:
+            result = await orchestrator.execute_command(
+                user_id=resolved_user_id,
+                command=command,
+                device_id=real_device_id,
+                workflow_id=workflow_id,
+                voice_input=voice_input,
+            )
+            # Update workflow status from orchestrator result
+            if workflow_id:
+                orch_status = result.get("status", "completed")
+                db_status = WorkflowStatus.COMPLETED if orch_status == "completed" else WorkflowStatus.FAILED
+                await _update_workflow_status(session, workflow_id, db_status, result=result)
+            return result
+        except Exception as exc:
+            logger.error(f"Workflow execution failed: {exc}")
+            await _update_workflow_status(session, workflow_id, WorkflowStatus.FAILED, error=str(exc))
+            return {"success": False, "intent": intent, "error": str(exc)}
     except Exception as exc:
-        logger.error(f"Workflow execution failed: {exc}")
+        logger.error(f"Command execution failed: {exc}")
+        await _update_workflow_status(session, workflow_id, WorkflowStatus.FAILED, error=str(exc))
         return {"success": False, "intent": intent, "error": str(exc)}
 
 

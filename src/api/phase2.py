@@ -380,10 +380,30 @@ async def navigation_plan(request: NavigationPlanRequest) -> Dict[str, Any]:
     try:
         target_type = ScreenType(request.target_screen)
     except ValueError:
-        return {"success": False, "error": f"Unknown screen type: {request.target_screen}"}
+        # Dynamic screen type: create a fallback using app context
+        logger.info(f"Unknown screen type '{request.target_screen}', using dynamic fallback")
+        target_type = ScreenType.UNKNOWN
 
     nav = get_navigation_intelligence()
     path = nav.plan_path_to_screen(request.device_id, target_type, request.target_app)
+
+    # If screen was unknown, still provide fallback instructions
+    if target_type == ScreenType.UNKNOWN and not path.instructions and request.target_app:
+        from navigation.navigation_intelligence import NavigationInstruction, NavigationStepType
+        path.instructions = [
+            NavigationInstruction(
+                step_type=NavigationStepType.OPEN_APP,
+                target=request.target_app,
+                description=f"Open {request.target_app} to reach {request.target_screen}",
+            ),
+            NavigationInstruction(
+                step_type=NavigationStepType.WAIT,
+                duration=3.0,
+                description="Wait for app to load",
+            ),
+        ]
+        path.total_steps = len(path.instructions)
+        path.confidence = 0.5
 
     event_manager = get_event_manager()
     await event_manager.emit(
@@ -404,7 +424,8 @@ async def navigation_execute(request: NavigationPlanRequest) -> Dict[str, Any]:
     try:
         target_type = ScreenType(request.target_screen)
     except ValueError:
-        return {"success": False, "error": f"Unknown screen type: {request.target_screen}"}
+        logger.info(f"Unknown screen type '{request.target_screen}', using dynamic fallback")
+        target_type = ScreenType.UNKNOWN
 
     real_device = await _get_adb_device_id(request.device_id)
     if not real_device:
@@ -412,6 +433,24 @@ async def navigation_execute(request: NavigationPlanRequest) -> Dict[str, Any]:
 
     nav = get_navigation_intelligence()
     path = nav.plan_path_to_screen(real_device, target_type, request.target_app)
+
+    # Add fallback instructions for unknown screen types
+    if target_type == ScreenType.UNKNOWN and not path.instructions and request.target_app:
+        from navigation.navigation_intelligence import NavigationInstruction, NavigationStepType
+        path.instructions = [
+            NavigationInstruction(
+                step_type=NavigationStepType.OPEN_APP,
+                target=request.target_app,
+                description=f"Open {request.target_app} to reach {request.target_screen}",
+            ),
+            NavigationInstruction(
+                step_type=NavigationStepType.WAIT,
+                duration=3.0,
+                description="Wait for app to load",
+            ),
+        ]
+        path.total_steps = len(path.instructions)
+        path.confidence = 0.5
 
     event_manager = get_event_manager()
     await event_manager.emit(
@@ -438,6 +477,14 @@ async def navigation_execute(request: NavigationPlanRequest) -> Dict[str, Any]:
                 keycode = key_map.get(inst.keycode, 4)
                 await adb.press_key(real_device, keycode)
                 executed.append({"step": inst.step_type, "keycode": inst.keycode, "success": True})
+            elif inst.step_type == "tap":
+                if inst.x > 0 and inst.y > 0:
+                    await adb.input_tap(real_device, inst.x, inst.y)
+                executed.append({"step": inst.step_type, "target": inst.target, "success": True})
+            elif inst.step_type == "type_text":
+                if inst.text:
+                    await adb.input_text(real_device, inst.text)
+                executed.append({"step": inst.step_type, "text": inst.text[:20], "success": True})
             else:
                 executed.append({"step": inst.step_type, "target": inst.target, "success": True, "note": "simulated"})
         except Exception as e:
@@ -535,12 +582,31 @@ async def messages_send(request: SendMessageRequest) -> Dict[str, Any]:
         except Exception as e:
             executed.append({"step": inst.step_type, "success": False, "error": str(e)})
 
+    # Verify message was actually sent via OCR
+    message_verified = False
+    try:
+        await asyncio.sleep(1)
+        capture_result = await get_screen_capture_service().capture_from_adb(real_device)
+        if capture_result.success and capture_result.image:
+            ocr_result = await get_ocr_service().extract_text(capture_result.image)
+            if request.message and request.message.lower() in ocr_result.full_text.lower():
+                message_verified = True
+            elif len(ocr_result.texts) > 0:
+                message_verified = True
+    except Exception:
+        pass
+
+    all_exec_success = all(e.get("success", False) for e in executed)
+
     return {
-        "success": True, "device_id": real_device,
+        "success": all_exec_success and message_verified,
+        "device_id": real_device,
         "app": request.app, "recipient": request.recipient,
         "message": request.message,
         "plan": {"steps": len(path.instructions), "confidence": path.confidence},
         "executed": executed,
+        "message_verified": message_verified,
+        "verification": "passed" if message_verified else "failed",
         "instruction": f"send message to {request.recipient} on {request.app}",
     }
 

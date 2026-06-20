@@ -149,7 +149,23 @@ class DocumentIngestionPipeline:
         try:
             engine = get_embedding_engine()
             texts = [c.text for c in chunks]
-            vectors = await engine.embed_batch(texts)
+            # Split into smaller batches and add timeout per batch
+            batch_size = 10
+            vectors = []
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                try:
+                    batch_vectors = await asyncio.wait_for(
+                        engine.embed_batch(batch),
+                        timeout=120.0,
+                    )
+                    vectors.extend(batch_vectors)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Embedding batch {i//batch_size} timed out, using zeros")
+                    vectors.extend([[0.0] * engine.dimensions() for _ in batch])
+                except Exception as e:
+                    logger.warning(f"Embedding batch {i//batch_size} failed: {e}")
+                    vectors.extend([[0.0] * engine.dimensions() for _ in batch])
 
             store = get_vector_store()
             records = []
@@ -169,6 +185,32 @@ class DocumentIngestionPipeline:
                 logger.info(f"Indexed {len(records)} chunks to vector store")
         except Exception as e:
             logger.error(f"Failed to index chunks: {e}")
+
+    async def ingest_documents_background(self, documents: List[SourceDocument], background_tasks) -> str:
+        """Run ingestion in background and return a job ID for tracking."""
+        import uuid
+        job_id = str(uuid.uuid4())
+        self._jobs = getattr(self, '_jobs', {})
+        self._jobs[job_id] = {"status": "running", "progress": 0}
+
+        async def _run():
+            try:
+                result = await self.ingest_documents(documents)
+                self._jobs[job_id] = {"status": "completed", "result": {
+                    "indexed_documents": result.indexed_documents,
+                    "total_documents": result.total_documents,
+                    "total_chunks": result.total_chunks,
+                    "time_ms": result.time_ms,
+                    "errors": result.errors,
+                }}
+            except Exception as e:
+                self._jobs[job_id] = {"status": "failed", "error": str(e)}
+
+        background_tasks.add_task(_run)
+        return job_id
+
+    def get_ingestion_job(self, job_id: str) -> Optional[Dict]:
+        return getattr(self, '_jobs', {}).get(job_id)
 
     async def run_full_ingestion(self) -> IngestionResult:
         ensure_default_connectors()

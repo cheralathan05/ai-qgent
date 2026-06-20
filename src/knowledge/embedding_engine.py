@@ -31,6 +31,21 @@ class EmbeddingEngine(ABC):
     def model_name(self) -> str: ...
 
 
+class LRUCache:
+    """Simple thread-safe LRU cache."""
+    def __init__(self, maxsize: int = 1000):
+        self._cache: Dict[str, Any] = {}
+        self._maxsize = maxsize
+
+    def get(self, key: str) -> Optional[Any]:
+        return self._cache.get(key)
+
+    def set(self, key: str, value: Any):
+        if len(self._cache) >= self._maxsize:
+            self._cache.clear()
+        self._cache[key] = value
+
+
 class OllamaEmbedding(EmbeddingEngine):
     def __init__(self, host: str = "localhost", port: int = 11434, model: str = "nomic-embed-text"):
         self.host = host
@@ -38,14 +53,22 @@ class OllamaEmbedding(EmbeddingEngine):
         self.model_name_str = model
         self.base_url = f"http://{host}:{port}"
         self._dimensions = 768
+        self._cache = LRUCache(maxsize=500)
 
     async def embed(self, text: str) -> List[float]:
+        if not text:
+            return [0.0] * self._dimensions
+        cached = self._cache.get(text)
+        if cached is not None:
+            return cached
         results = await self.embed_batch([text])
-        return results[0] if results else []
+        result = results[0] if results else [0.0] * self._dimensions
+        self._cache.set(text, result)
+        return result
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         import httpx
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             try:
                 resp = await client.post(
                     f"{self.base_url}/api/embed",

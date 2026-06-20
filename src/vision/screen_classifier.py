@@ -305,18 +305,33 @@ class ScreenClassifier:
             best_confidence = 0.3
 
         if best_match == ScreenType.UNKNOWN and not app_name:
-            if "lock" in text_lower or "enter" in text_lower:
+            if "lock" in text_lower or "enter pin" in text_lower or "password" in text_lower or "swipe" in text_lower:
                 best_match = ScreenType.LOCK_SCREEN
                 best_confidence = 0.4
                 best_reason = "lock screen keywords detected"
-            elif "setting" in text_lower:
+            elif "setting" in text_lower or "preference" in text_lower:
                 best_match = ScreenType.SETTINGS
                 best_confidence = 0.3
                 best_reason = "settings keywords detected"
-            elif "google" in text_lower or "search" in text_lower:
+            elif "google" in text_lower or "search" in text_lower or "www." in text_lower or "http" in text_lower:
                 best_match = ScreenType.CHROME_SEARCH
                 best_confidence = 0.3
                 best_reason = "google/search keywords detected"
+
+        # Broader detection: if we have OCR text but no match, try heuristic
+        if best_match == ScreenType.UNKNOWN and text:
+            if "message" in text_lower or "send" in text_lower or "chat" in text_lower:
+                best_match = ScreenType.WHATSAPP_CHAT
+                best_confidence = max(best_confidence, 0.25)
+                best_reason = "chat/message keywords detected"
+            elif "inbox" in text_lower or "mail" in text_lower or "email" in text_lower:
+                best_match = ScreenType.GMAIL_INBOX
+                best_confidence = max(best_confidence, 0.25)
+                best_reason = "email keywords detected"
+            elif "video" in text_lower or "subscribe" in text_lower or "upload" in text_lower:
+                best_match = ScreenType.YOUTUBE_FEED
+                best_confidence = max(best_confidence, 0.25)
+                best_reason = "video keywords detected"
 
         return ScreenClassificationResult(
             screen_type=best_match,

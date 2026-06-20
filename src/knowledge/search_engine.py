@@ -214,6 +214,34 @@ class HybridSearch:
         return combined[:top_k]
 
 
+class SearchCache:
+    """Simple in-memory search result cache with TTL."""
+    def __init__(self, maxsize: int = 200, ttl_ms: int = 30000):
+        self._cache: Dict[str, tuple] = {}
+        self._maxsize = maxsize
+        self._ttl_ms = ttl_ms
+
+    def _make_key(self, query: str, search_type: str, top_k: int, filters: Optional[Dict]) -> str:
+        return f"{search_type}:{top_k}:{query}:{json.dumps(filters or {}, sort_keys=True)}"
+
+    def get(self, query: str, search_type: str, top_k: int, filters: Optional[Dict]) -> Optional[SearchResponse]:
+        key = self._make_key(query, search_type, top_k, filters)
+        entry = self._cache.get(key)
+        if entry is not None:
+            result, timestamp = entry
+            elapsed = (time.time() - timestamp) * 1000
+            if elapsed < self._ttl_ms:
+                return result
+            del self._cache[key]
+        return None
+
+    def set(self, query: str, search_type: str, top_k: int, filters: Optional[Dict], response: SearchResponse):
+        if len(self._cache) >= self._maxsize:
+            self._cache.clear()
+        key = self._make_key(query, search_type, top_k, filters)
+        self._cache[key] = (response, time.time())
+
+
 class SearchEngine:
     def __init__(self):
         self.vector = VectorSearch()
@@ -223,6 +251,7 @@ class SearchEngine:
         self.bm25 = BM25Search()
         self.metadata = MetadataSearch()
         self._doc_cache: List[Dict] = []
+        self._cache = SearchCache(maxsize=200, ttl_ms=30000)
 
     def update_document_cache(self, documents: List[Dict]):
         self._doc_cache = documents
@@ -232,6 +261,11 @@ class SearchEngine:
                      filters: Optional[Dict] = None, collection: str = "documents") -> SearchResponse:
         import time
         start = time.time()
+
+        # Check cache first
+        cached = self._cache.get(query, search_type, top_k, filters)
+        if cached is not None:
+            return cached
 
         if search_type == "vector":
             results = await self.vector.search(query, top_k=top_k, filters=filters, collection=collection)
@@ -247,13 +281,17 @@ class SearchEngine:
             results = await self.hybrid.search(query, top_k=top_k, filters=filters, collection=collection)
 
         time_ms = (time.time() - start) * 1000
-        return SearchResponse(
+        response = SearchResponse(
             query=query,
             results=results,
             total=len(results),
             search_type=search_type,
             time_ms=time_ms,
         )
+
+        # Cache the result
+        self._cache.set(query, search_type, top_k, filters, response)
+        return response
 
     async def vector_search(self, query: str, top_k: int = 20, filters: Optional[Dict] = None) -> SearchResponse:
         return await self.search(query, "vector", top_k, filters)

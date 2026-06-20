@@ -159,13 +159,20 @@ async def reindex_knowledge():
 async def search_knowledge(request: SearchRequest):
     engine = get_search_engine()
     start = time.time()
-    response = await engine.search(
-        query=request.query,
-        search_type=request.search_type,
-        top_k=request.top_k,
-        filters=request.filters,
-        collection=request.collection,
-    )
+    try:
+        response = await asyncio.wait_for(
+            engine.search(
+                query=request.query,
+                search_type=request.search_type,
+                top_k=request.top_k,
+                filters=request.filters,
+                collection=request.collection,
+            ),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        return {"query": request.query, "error": "Search timed out after 30s", "total": 0, "results": [], "time_ms": 30000}
+
     elapsed = (time.time() - start) * 1000
 
     analytics = get_knowledge_analytics()
@@ -292,14 +299,26 @@ async def list_knowledge_sources():
 @router.post("/ask", summary="Ask a question with RAG")
 async def ask_question(request: AskRequest):
     agent = get_knowledge_agent()
-    response = await agent.answer(request.query)
-    return {
-        "answer": response.answer,
-        "sources": response.sources,
-        "confidence": response.confidence,
-        "suggestions": response.suggestions,
-        "type": response.type,
-    }
+    try:
+        response = await asyncio.wait_for(
+            agent.answer(request.query),
+            timeout=60.0,
+        )
+        return {
+            "answer": response.answer,
+            "sources": response.sources,
+            "confidence": response.confidence,
+            "suggestions": response.suggestions,
+            "type": response.type,
+        }
+    except asyncio.TimeoutError:
+        return {
+            "answer": "I'm sorry, the knowledge query timed out. Please try a simpler question.",
+            "sources": [],
+            "confidence": 0.0,
+            "suggestions": ["Try rephrasing your question", "Search for specific files instead"],
+            "type": "timeout",
+        }
 
 
 @router.post("/chat", summary="Chat with knowledge base")

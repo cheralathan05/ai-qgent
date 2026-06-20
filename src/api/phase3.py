@@ -397,7 +397,7 @@ async def get_memory_history(user_id: str = "default", limit: int = 50, memory_t
         "memories": [
             {
                 "id": m.id,
-                "type": m.type.value,
+                "type": m.type.value if hasattr(m.type, 'value') else str(m.type),
                 "content": m.content[:300],
                 "importance": m.importance,
                 "timestamp": m.timestamp.isoformat(),
@@ -443,9 +443,9 @@ async def list_graph_entities():
             {
                 "id": e.id,
                 "name": e.name,
-                "type": e.type.value,
+                "type": e.type.value if hasattr(e.type, 'value') else str(e.type),
                 "properties": e.properties,
-                "created_at": e.created_at.isoformat(),
+                "created_at": e.created_at.isoformat() if hasattr(e.created_at, 'isoformat') else str(e.created_at),
             }
             for e in entities
         ],
@@ -466,13 +466,13 @@ async def get_graph_entity(entity_id: str):
         "entity": {
             "id": entity.id,
             "name": entity.name,
-            "type": entity.type.value,
+            "type": entity.type.value if hasattr(entity.type, 'value') else str(entity.type),
             "properties": entity.properties,
         },
         "relationships": [
             {
                 "id": r.id,
-                "type": r.type.value,
+                "type": r.type.value if hasattr(r.type, 'value') else str(r.type),
                 "source_id": r.source_id,
                 "target_id": r.target_id,
                 "properties": r.properties,
@@ -480,7 +480,7 @@ async def get_graph_entity(entity_id: str):
             for r in relationships
         ],
         "connected_entities": [
-            {"id": e.id, "name": e.name, "type": e.type.value}
+            {"id": e.id, "name": e.name, "type": e.type.value if hasattr(e.type, 'value') else str(e.type)}
             for e in connected
         ],
     }
@@ -497,7 +497,7 @@ async def list_graph_relationships():
                 "id": r.id,
                 "source_id": r.source_id,
                 "target_id": r.target_id,
-                "type": r.type.value,
+                "type": r.type.value if hasattr(r.type, 'value') else str(r.type),
                 "properties": r.properties,
             }
             for r in rels
@@ -518,7 +518,7 @@ async def create_graph_entity(request: GraphEntityRequest):
         "entity": {
             "id": entity.id,
             "name": entity.name,
-            "type": entity.type.value,
+            "type": entity.type.value if hasattr(entity.type, 'value') else str(entity.type),
             "properties": entity.properties,
         },
     }
@@ -539,7 +539,7 @@ async def create_graph_relationship(request: GraphRelationshipRequest):
             "id": rel.id,
             "source_id": rel.source_id,
             "target_id": rel.target_id,
-            "type": rel.type.value,
+            "type": rel.type.value if hasattr(rel.type, 'value') else str(rel.type),
         },
     }
 

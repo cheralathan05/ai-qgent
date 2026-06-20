@@ -161,7 +161,7 @@ class KnowledgeGraph:
         q = query.lower()
         return [
             e for e in self._entities.values()
-            if q in e.name.lower() or q in e.type.value.lower()
+            if q in e.name.lower() or q in (e.type.value if hasattr(e.type, 'value') else str(e.type)).lower()
         ]
 
     def get_relationships(self, entity_id: str) -> List[KnowledgeRelationship]:

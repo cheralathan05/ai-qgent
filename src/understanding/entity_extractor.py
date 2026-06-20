@@ -70,7 +70,7 @@ class IntentResult:
     context: Optional[Dict[str, Any]] = None
 
 
-KNOWN_APPS = {
+KNOWN_APPS: Dict[str, str] = {
     "instagram": "com.instagram.android",
     "insta": "com.instagram.android",
     "ig": "com.instagram.android",
@@ -111,6 +111,28 @@ KNOWN_APPS = {
     "messenger": "com.facebook.orca",
     "snapchat": "com.snapchat.android",
 }
+
+DYNAMIC_KNOWN_APPS: Dict[str, str] = {}
+
+
+def sync_known_apps_from_resolver(resolver=None):
+    """Dynamically populate KNOWN_APPS from the app resolver registry.
+    
+    Call this after the resolver has built its registry.
+    """
+    if resolver is None:
+        return
+    if not resolver.is_ready():
+        return
+
+    updates = {}
+    for name_key, app_info in resolver.registry.items():
+        updates[name_key] = app_info.package_name
+
+    global KNOWN_APPS, DYNAMIC_KNOWN_APPS
+    DYNAMIC_KNOWN_APPS.clear()
+    DYNAMIC_KNOWN_APPS.update(updates)
+    KNOWN_APPS.update(DYNAMIC_KNOWN_APPS)
 
 KNOWN_CONTACTS = {
     "guru", "mom", "dad", "brother", "sister", "friend",

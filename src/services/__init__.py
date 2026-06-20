@@ -14,6 +14,9 @@ from .device_selector import get_device_selector
 from .conversation_manager import get_conversation_manager
 from .voice_session import get_voice_session_store
 from .contact_store import get_contact_store
+from .app_resolver import get_app_resolver
+from .app_launch import get_app_launch_service
+from .app_discovery import get_app_discovery_service
 
 __all__ = [
     "get_adb_service",
@@ -30,4 +33,7 @@ __all__ = [
     "get_conversation_manager",
     "get_voice_session_store",
     "get_contact_store",
+    "get_app_resolver",
+    "get_app_launch_service",
+    "get_app_discovery_service",
 ]

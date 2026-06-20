@@ -34,13 +34,22 @@ class VoiceRequest(BaseModel):
     audio_base64: Optional[str] = None
     mock_voice_text: Optional[str] = "Open Instagram"
 
-APP_MAPPING = {
-    "instagram": "com.instagram.android",
-    "chrome": "com.android.chrome",
-    "whatsapp": "com.whatsapp",
-    "youtube": "com.google.android.youtube",
-    "settings": "com.android.settings"
-}
+async def _resolve_app_package(app_name: str) -> Optional[str]:
+    """Resolve app name to package using dynamic resolver."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["adb", "shell", "pm", "list", "packages"],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith("package:"):
+                pkg = line[8:].strip()
+                if app_name.lower() in pkg.lower():
+                    return pkg
+    except Exception:
+        pass
+    return None
 
 # =====================================================================
 # CORE PHASE 1 EXECUTION ORCHESTRATOR
@@ -121,17 +130,37 @@ async def execute_phase1_pipeline(command_text: str, session) -> Dict[str, Any]:
     final_status = "completed"
 
     # Shell Execution Interface mapping
-    if intent == "open_app" and target in APP_MAPPING:
-        pkg = APP_MAPPING[target]
+    if intent == "open_app":
+        pkg = await _resolve_app_package(target) if target != "unknown" else None
+        if not pkg:
+            # Fallback: try dynamic resolution via adb
+            try:
+                pkg_output = subprocess.run(
+                    ["adb", "-s", target_device_id, "shell", "pm", "list", "packages"],
+                    capture_output=True, text=True, timeout=5
+                )
+                for line in pkg_output.stdout.splitlines():
+                    if line.startswith("package:"):
+                        candidate = line[8:].strip()
+                        if target and target.lower() in candidate.lower():
+                            pkg = candidate
+                            break
+            except Exception:
+                pass
+        if not pkg:
+            pkg = target  # Use raw name as fallback
         # Open app via active interactive shell runner
         subprocess.run(["adb", "-s", target_device_id, "shell", "monkey", "-p", pkg, "1"], capture_output=True, timeout=3)
         await asyncio.sleep(1.0)
         
         # Immediate verification stage check
-        verify_run = subprocess.run(["adb", "-s", target_device_id, "shell", "dumpsys", "window"], capture_output=True, text=True, timeout=3)
-        if pkg in verify_run.stdout or True:  # Fallback auto-pass enforces system responsiveness matching pipeline definition
-            event_manager.publish("AppOpened", {"workflow_id": workflow_id, "message": f"✓ {target.capitalize()} Opened"})
-        else:
+        try:
+            verify_run = subprocess.run(["adb", "-s", target_device_id, "shell", "dumpsys", "window"], capture_output=True, text=True, timeout=3)
+            if pkg in verify_run.stdout:
+                event_manager.publish("AppOpened", {"workflow_id": workflow_id, "message": f"✓ {target.capitalize()} Opened"})
+            else:
+                final_status = "verification_failed"
+        except Exception:
             final_status = "verification_failed"
             
     elif intent == "take_screenshot":

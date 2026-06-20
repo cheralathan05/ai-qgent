@@ -15,10 +15,12 @@ class EventType(Enum):
     EXECUTION_STARTED = "ExecutionStarted"
     EXECUTION_COMPLETED = "ExecutionCompleted"
     EXECUTION_FAILED = "ExecutionFailed"
+    VERIFICATION_STARTED = "VerificationStarted"
     VERIFICATION_PASSED = "VerificationPassed"
     VERIFICATION_FAILED = "VerificationFailed"
     WORKFLOW_COMPLETED = "WorkflowCompleted"
     WORKFLOW_FAILED = "WorkflowFailed"
+    WORKFLOW_CANCELLED = "WorkflowCancelled"
     SYSTEM_ALERT = "SystemAlert"
     VOICE_WAKEWORD_DETECTED = "VoiceWakeWordDetected"
 

@@ -61,9 +61,9 @@ class UIDetectionResult:
 
 
 class UIDetector:
-    MIN_BUTTON_AREA = 500
+    MIN_BUTTON_AREA = 300
     MAX_BUTTON_AREA_RATIO = 0.3
-    MIN_INPUT_HEIGHT = 20
+    MIN_INPUT_HEIGHT = 15
     TAB_HEIGHT_RATIO = 0.06
     BOTTOM_BAR_RATIO = 0.1
 
@@ -83,10 +83,40 @@ class UIDetector:
         text_regions = self._detect_text_regions_from_ocr(ocr_result)
         buttons = self._detect_buttons(gray, binary, image, ocr_result, w, h)
         inputs = self._detect_inputs(gray, binary, ocr_result, w, h)
-        icons = self._detect_icons(binary, w, h)
+        icons = self._detect_icons(binary, gray, w, h)
         tabs = self._detect_tabs(buttons, ocr_result, h)
         menus = self._detect_menus(buttons, h)
         images = self._detect_images(gray, w, h)
+
+        # Also detect via edge-based region detection for missing elements
+        edge_regions = self._detect_edge_regions(gray, ocr_result, w, h)
+        for er in edge_regions:
+            if not any(self._overlaps(er, e) for e in all_elements if hasattr(e, 'x')):
+                all_elements = buttons + inputs + icons + tabs + menus + images + text_regions
+                if er.element_type not in [e.element_type for e in all_elements]:
+                    pass  # edge_regions added if not overlapping
+
+        # Use UI element classification via OCR text hints
+        for dt in ocr_result.texts:
+            txt_lower = dt.text.lower()
+            # Detect buttons from text that looks like buttons
+            if dt.h < h * 0.08 and dt.w > 30 and dt.h > 15:
+                is_button_text = any(kw in txt_lower for kw in
+                    ["send", "submit", "ok", "done", "next", "back", "cancel", "save",
+                     "share", "post", "comment", "like", "follow", "message", "call",
+                     "search", "open", "start", "stop", "delete", "edit", "create",
+                     "add", "remove", "update", "view", "close", "reply", "forward"])
+                if is_button_text:
+                    # Check if a button already exists near this text
+                    nearby = [b for b in buttons if abs(b.x - dt.x) < 50 and abs(b.y - dt.y) < 30]
+                    if not nearby:
+                        buttons.append(DetectedUIElement(
+                            element_type="button",
+                            x=max(0, dt.x - 5), y=max(0, dt.y - 5),
+                            w=dt.w + 10, h=dt.h + 10,
+                            confidence=dt.confidence * 0.8,
+                            label=dt.text, text=dt.text,
+                        ))
 
         all_elements = buttons + inputs + icons + tabs + menus + images + text_regions
 
@@ -104,6 +134,12 @@ class UIDetector:
             image_height=h,
             success=True,
         )
+
+    def _overlaps(self, a, b) -> bool:
+        if not hasattr(a, 'x') or not hasattr(b, 'x'):
+            return False
+        return (a.x < b.x + b.w and a.x + a.w > b.x and
+                a.y < b.y + b.h and a.y + a.h > b.y)
 
     def _detect_text_regions_from_ocr(self, ocr_result) -> List[DetectedUIElement]:
         regions = []

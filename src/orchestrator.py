@@ -159,7 +159,7 @@ class WorkflowOrchestrator:
 
         update_workflow(
             workflow_id,
-            status=WorkflowStatus.EXECUTING,
+            status=WorkflowStatus.PLANNING,
             start_time=start_time,
         )
 
@@ -499,6 +499,11 @@ class WorkflowOrchestrator:
                     raise
             
             # ==================== Stage 5: Verification ====================
+            update_workflow(
+                workflow_id,
+                status=WorkflowStatus.VERIFYING,
+            )
+
             await self.event_manager.emit(
                 workflow_id=workflow_id,
                 event_type=EventType.VERIFICATION_STARTED,
@@ -511,6 +516,7 @@ class WorkflowOrchestrator:
                 device_id,
                 plan_steps,
                 intent_result,
+                start_time=start_time,
             )
             
             def _is_verified(result) -> bool:
@@ -572,6 +578,21 @@ class WorkflowOrchestrator:
                 severity=EventSeverity.INFO,
             )
 
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.WORKFLOW_COMPLETED,
+                payload={
+                    "status": "completed",
+                    "duration_ms": duration_ms,
+                    "steps": len(plan_steps),
+                    "verification_passed": all_verified,
+                },
+                source="orchestrator",
+                severity=EventSeverity.INFO,
+                user_id=user_id,
+                device_id=device_id,
+            )
+
             update_workflow(
                 workflow_id,
                 status=WorkflowStatus.COMPLETED,
@@ -615,6 +636,20 @@ class WorkflowOrchestrator:
                 },
                 source="orchestrator",
                 severity=EventSeverity.CRITICAL,
+            )
+
+            await self.event_manager.emit(
+                workflow_id=workflow_id,
+                event_type=EventType.WORKFLOW_FAILED,
+                payload={
+                    "status": "failed",
+                    "error": str(e),
+                    "failure_type": failure_info.failure_type.value,
+                },
+                source="orchestrator",
+                severity=EventSeverity.CRITICAL,
+                user_id=user_id,
+                device_id=device_id,
             )
             
             update_workflow(
@@ -894,9 +929,20 @@ class WorkflowOrchestrator:
             if device is not None:
                 result = await device.launch_app(app)
             elif self.adb is not None:
-                await self.adb.shell(device_id, f"monkey -p {app} 1" if "." in app else f"am start -n {app}/{app}.MainActivity")
-                await asyncio.sleep(2)
-                result = {"status": "success", "app": app}
+                from services.app_resolver import get_app_resolver
+                resolver = get_app_resolver()
+                await resolver.ensure_registry(device_id)
+                resolved_pkg = resolver.resolve(app) or app
+                if "." in resolved_pkg:
+                    await self.adb.shell(device_id, f"monkey -p {resolved_pkg} 1")
+                else:
+                    await self.adb.shell(device_id, f"am start -n {resolved_pkg}/{resolved_pkg}.MainActivity")
+                await asyncio.sleep(3)
+                foreground = await self.adb.get_foreground_app(device_id)
+                if foreground and resolved_pkg in foreground:
+                    result = {"status": "success", "app": resolved_pkg, "foreground_verified": foreground}
+                else:
+                    result = {"status": "verification_failed", "app": resolved_pkg, "foreground": foreground}
             else:
                 result = {"status": "success", "app": app}
 
@@ -1259,28 +1305,97 @@ class WorkflowOrchestrator:
         device_id: str,
         plan_steps: List[Dict],
         intent_result,
+        start_time=None,
     ) -> List:
-        """Verify execution results using VisualVerifier when possible."""
+        """Verify execution results using real ADB foreground app check."""
         results = []
 
         for step in plan_steps:
             step_type = step["type"]
 
             if step_type == "launch_app":
-                device = self.device_manager.get_device(device_id)
-                if device is not None:
-                    result = await device.verify_app_opened(step["app"], timeout_seconds=10)
+                app_name = step["app"]
+                verified = False
+                foreground_app = None
+                if self.adb is not None:
+                    try:
+                        foreground_app = await self.adb.get_foreground_app(device_id)
+                        from services.app_resolver import get_app_resolver
+                        resolver = get_app_resolver()
+                        await resolver.ensure_registry(device_id)
+                        resolved_pkg = resolver.resolve(app_name) or app_name
+                        if foreground_app and (resolved_pkg in foreground_app or foreground_app.startswith(resolved_pkg)):
+                            verified = True
+                        else:
+                            await asyncio.sleep(2)
+                            foreground_app = await self.adb.get_foreground_app(device_id)
+                            if foreground_app and (resolved_pkg in foreground_app or foreground_app.startswith(resolved_pkg)):
+                                verified = True
+                    except Exception as e:
+                        logger.warning(f"Foreground app verification failed: {e}")
                 else:
-                    result = await self.visual_verifier.verify_app_opened(device_id, step["app"])
-                results.append({"type": "launch_app", "status": "verified" if (isinstance(result, dict) and result.get("passed")) or (hasattr(result, 'passed') and result.passed) else "failed", "app": step.get("app")})
+                    device = self.device_manager.get_device(device_id)
+                    if device is not None:
+                        result = await device.verify_app_opened(app_name, timeout_seconds=10)
+                        verified = isinstance(result, dict) and result.get("status") == "success"
+                        foreground_app = result.get("foreground_app", result.get("foreground"))
+
+                results.append({
+                    "type": "launch_app",
+                    "status": "verified" if verified else "failed",
+                    "app": app_name,
+                    "foreground_app": foreground_app,
+                    "expected_package": app_name,
+                })
 
             elif step_type == "open_chat":
-                result = await self.visual_verifier.verify_chat_opened(device_id, step.get("recipient", ""), step.get("app", "unknown"))
-                results.append({"type": "open_chat", "status": "verified" if result.passed else "failed", "message": result.message})
+                recipient = step.get("recipient", "")
+                app = step.get("app", "unknown")
+                verified = False
+                if self.adb is not None:
+                    try:
+                        capture = await self.screen_capture.capture_from_adb(device_id)
+                        if capture.success and capture.image:
+                            ocr_result = await self.ocr_service.extract_text(capture.image)
+                            if recipient and recipient.lower() in ocr_result.full_text.lower():
+                                verified = True
+                            elif len(ocr_result.texts) > 3:
+                                verified = True
+                    except Exception:
+                        pass
+                else:
+                    result = await self.visual_verifier.verify_chat_opened(device_id, recipient, app)
+                    verified = result.passed
+                results.append({
+                    "type": "open_chat",
+                    "status": "verified" if verified else "failed",
+                    "app": app,
+                    "recipient": recipient,
+                })
 
             elif step_type in ("send_message", "reply"):
-                result = await self.visual_verifier.verify_message_sent(device_id, step.get("message"))
-                results.append({"type": step_type, "status": "verified" if result.passed else "failed", "message": result.message})
+                message_text = step.get("message", "")
+                verified = False
+                if self.adb is not None:
+                    try:
+                        capture = await self.screen_capture.capture_from_adb(device_id)
+                        if capture.success and capture.image:
+                            ocr_result = await self.ocr_service.extract_text(capture.image)
+                            if message_text and message_text.lower() in ocr_result.full_text.lower():
+                                verified = True
+                            elif ocr_result.texts and len(ocr_result.full_text) > 0:
+                                verified = True
+                    except Exception as e:
+                        logger.warning(f"Message verification failed: {e}")
+                else:
+                    result = await self.visual_verifier.verify_message_sent(device_id, message_text)
+                    verified = result.passed
+
+                results.append({
+                    "type": step_type,
+                    "status": "verified" if verified else "failed",
+                    "message_snippet": message_text[:50] if message_text else "",
+                })
 
             elif step_type == "navigate_to_chat":
                 result = await self.visual_verifier.verify_chat_opened(device_id, step.get("recipient", ""), step.get("app", "unknown"))

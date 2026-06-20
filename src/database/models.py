@@ -18,7 +18,10 @@ Base = declarative_base()
 
 class WorkflowStatus(str, enum.Enum):
     PENDING = "pending"
+    PLANNING = "planning"
+    APPROVED = "approved"
     EXECUTING = "executing"
+    VERIFYING = "verifying"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"

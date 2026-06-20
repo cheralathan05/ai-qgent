@@ -68,32 +68,21 @@ class ADBCommandError(RuntimeError):
 class ADBService:
     """Wraps adb commands for Android automation."""
 
-    APP_PACKAGE_MAP = {
-        "chrome": "com.android.chrome",
-        "instagram": "com.instagram.android",
-        "whatsapp": "com.whatsapp",
-        "youtube": "com.google.android.youtube",
-        "settings": "com.android.settings",
-        "gmail": "com.google.android.gm",
-        "maps": "com.google.android.apps.maps",
-        "camera": "com.android.camera",
-        "calculator": "com.android.calculator2",
-        "phone": "com.android.dialer",
-        "dialer": "com.android.dialer",
-        "play store": "com.android.vending",
-        "spotify": "com.spotify.music",
-        "twitter": "com.twitter.android",
-        "facebook": "com.facebook.katana",
-        "messages": "com.google.android.apps.messaging",
-        "files": "com.android.documentsui",
-        "contacts": "com.android.contacts",
-        "clock": "com.android.deskclock",
-        "calendar": "com.android.calendar",
-    }
-
     def __init__(self, adb_path: Optional[str] = None, default_timeout: int = 30):
         self.adb_path = adb_path or find_adb_binary()
         self.default_timeout = default_timeout
+        self._resolver = None
+
+    def _get_resolver(self):
+        if self._resolver is None:
+            from .app_resolver import get_app_resolver
+            self._resolver = get_app_resolver()
+        return self._resolver
+
+    async def _ensure_resolver(self, device_id: str):
+        resolver = self._get_resolver()
+        await resolver.ensure_registry(device_id)
+        return resolver
 
     async def _run(self, args: List[str], timeout: Optional[int] = None) -> str:
         if not shutil.which(self.adb_path):
@@ -161,10 +150,23 @@ class ADBService:
         if not app_name:
             logger.warning("resolve_package_name called with empty/None app_name")
             return ""
-        normalized = app_name.strip().lower()
-        return self.APP_PACKAGE_MAP.get(normalized, normalized)
+        return app_name.strip().lower()
 
-    async def shell(self, device_id: str, command: str) -> str:
+    async def resolve_package_dynamic(self, device_id: str, app_name: str) -> Optional[str]:
+        """Resolve app name to package using the dynamic app resolver."""
+        resolver = await self._ensure_resolver(device_id)
+        resolved = resolver.resolve(app_name)
+        if resolved:
+            return resolved
+        logger.warning(f"Dynamic resolution failed for '{app_name}', using raw name")
+        return app_name.strip().lower()
+
+    async def open_app(self, device_id: str, app_name: str) -> str:
+        """Open an app by name, using dynamic resolution first."""
+        pkg = await self.resolve_package_dynamic(device_id, app_name)
+        return await self.launch_package(device_id, pkg)
+
+    async def launch_package(self, device_id: str, package: str) -> str:
         return await self._run(["-s", device_id, "shell", command], timeout=self.default_timeout)
 
     async def start_activity(self, device_id: str, package_name: str, activity: str) -> str:
@@ -206,7 +208,8 @@ class ADBService:
         return await self.shell(device_id, f"input keyevent {keycode}")
 
     async def close_app(self, device_id: str, app_name: str) -> str:
-        return await self.shell(device_id, f"am force-stop {self.resolve_package_name(app_name)}")
+        pkg = await self.resolve_package_dynamic(device_id, app_name)
+        return await self.shell(device_id, f"am force-stop {pkg}")
 
     async def input_tap(self, device_id: str, x: int, y: int) -> str:
         return await self.shell(device_id, f"input tap {x} {y}")
@@ -299,7 +302,9 @@ class ADBService:
             return None
 
     async def verify_foreground_app(self, device_id: str, app_name: str) -> bool:
-        return await self.get_foreground_app(device_id) == self.resolve_package_name(app_name)
+        pkg = await self.resolve_package_dynamic(device_id, app_name)
+        foreground = await self.get_foreground_app(device_id)
+        return foreground == pkg
 
     async def get_device_status(self, device_id: str) -> Dict[str, Any]:
         devices = await self.list_devices()

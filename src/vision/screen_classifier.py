@@ -210,6 +210,25 @@ APP_PACKAGE_ALIASES: Dict[str, str] = {
 }
 
 
+def _get_dynamic_aliases() -> Dict[str, str]:
+    """Augment APP_PACKAGE_ALIASES with dynamically discovered apps."""
+    try:
+        from services.app_resolver import get_app_resolver
+        resolver = get_app_resolver()
+        if resolver.is_ready():
+            extra = {}
+            for pkg, info in resolver.package_map.items():
+                for name in info.normalized_names:
+                    extra[pkg] = name
+                    break
+                if pkg not in extra:
+                    extra[pkg] = info.app_label.lower()
+            return extra if extra else APP_PACKAGE_ALIASES
+    except Exception:
+        pass
+    return APP_PACKAGE_ALIASES
+
+
 class ScreenClassifier:
     def __init__(self):
         pass
@@ -313,8 +332,9 @@ class ScreenClassifier:
         if not package:
             return None
         clean = package.strip()
-        if clean in APP_PACKAGE_ALIASES:
-            return APP_PACKAGE_ALIASES[clean]
+        aliases = _get_dynamic_aliases()
+        if clean in aliases:
+            return aliases[clean]
         if "." in clean:
             parts = clean.split(".")
             for i in range(len(parts) - 1, -1, -1):

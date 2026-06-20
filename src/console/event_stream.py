@@ -110,6 +110,11 @@ class EventType(str, Enum):
     INPUT_DETECTED = "input_detected"
     ELEMENT_INTERACTED = "element_interacted"
     
+    # Workflow lifecycle
+    WORKFLOW_COMPLETED = "workflow_completed"
+    WORKFLOW_FAILED = "workflow_failed"
+    WORKFLOW_CANCELLED = "workflow_cancelled"
+    
     # System
     SYSTEM_ALERT = "system_alert"
     SYSTEM_WARNING = "system_warning"
@@ -173,6 +178,9 @@ class WorkflowEvent:
         """Get console icon based on event type"""
         icons = {
             EventType.COMMAND_RECEIVED: "🎤",
+            EventType.WORKFLOW_COMPLETED: "✅",
+            EventType.WORKFLOW_FAILED: "💥",
+            EventType.WORKFLOW_CANCELLED: "🚫",
             EventType.INTENT_DETECTED: "🎤",
             EventType.DEVICE_SELECTED: "📱",
             EventType.PLAN_CREATED: "📋",

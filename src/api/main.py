@@ -34,6 +34,9 @@ from services.conversation_manager import get_conversation_manager
 from services.adb_service import get_adb_service, find_adb_binary
 from services.device_agent import get_device_agent
 from services.redis_service import get_redis_service
+from services.app_resolver import get_app_resolver
+from services.app_launch import get_app_launch_service
+from services.app_discovery import get_app_discovery_service
 from config import Config
 from api.life_direction import router as life_direction_router
 
@@ -170,26 +173,6 @@ def _build_simple_response(result: Dict[str, Any], command: str, transcript: Opt
     return payload
 
 
-PACKAGE_MAP = {
-    "instagram": "com.instagram.android",
-    "whatsapp": "com.whatsapp",
-    "chrome": "com.android.chrome",
-    "youtube": "com.google.android.youtube",
-    "settings": "com.android.settings",
-    "gmail": "com.google.android.gm",
-    "maps": "com.google.android.apps.maps",
-    "camera": "com.android.camera",
-    "calculator": "com.android.calculator2",
-    "phone": "com.android.dialer",
-    "play store": "com.android.vending",
-    "spotify": "com.spotify.music",
-    "twitter": "com.twitter.android",
-    "facebook": "com.facebook.katana",
-    "messages": "com.google.android.apps.messaging",
-    "files": "com.android.documentsui",
-}
-
-
 async def _resolve_adb_device() -> Optional[str]:
     """Return the serial of the first connected Android device, or None."""
     try:
@@ -216,29 +199,48 @@ async def _adb_action(adb, device_id, method, *args) -> Dict[str, Any]:
         return {"success": False, "status": "error", "error": str(exc)}
 
 
-YOUTUBE_APP_NAME = "youtube"
-YOUTUBE_PACKAGE = "com.google.android.youtube"
 KEYCODE_SEARCH = 84
 KEYCODE_ENTER = 66
+
+
+async def _resolve_youtube_package(adb, device_id: str) -> Optional[str]:
+    """Resolve YouTube package dynamically."""
+    try:
+        from services.app_resolver import get_app_resolver
+        resolver = get_app_resolver()
+        await resolver.ensure_registry(device_id)
+        pkg = resolver.resolve("youtube")
+        if pkg:
+            return pkg
+    except Exception:
+        pass
+    return "com.google.android.youtube"
 
 
 async def _search_youtube(adb, device_id: str, query: str) -> Dict[str, Any]:
     """Open YouTube and search for query using native app interaction."""
     actions = []
+    youtube_package = await _resolve_youtube_package(adb, device_id)
     try:
-        await adb.open_app(device_id, YOUTUBE_APP_NAME)
+        await adb.open_app(device_id, "youtube")
         actions.append("opened_youtube")
         await asyncio.sleep(4)
         foreground = await adb.get_foreground_app(device_id)
-        if not foreground or YOUTUBE_PACKAGE not in str(foreground):
+        if not foreground or not foreground.startswith(youtube_package):
             try:
-                await adb.start_activity(device_id, YOUTUBE_PACKAGE, "com.google.android.youtube.HomeActivity")
-                actions.append("launched_via_activity")
-                await asyncio.sleep(3)
-                foreground = await adb.get_foreground_app(device_id)
+                from services.app_launch import get_app_launch_service
+                launch = get_app_launch_service(adb_service=adb)
+                activity = await launch.resolve_activity(device_id, youtube_package)
+                if activity:
+                    parts = activity.split("/", 1)
+                    activity_name = parts[1] if len(parts) > 1 else activity
+                    await adb.start_activity(device_id, youtube_package, activity_name)
+                    actions.append("launched_via_activity")
+                    await asyncio.sleep(3)
+                    foreground = await adb.get_foreground_app(device_id)
             except Exception:
                 pass
-            if not foreground or YOUTUBE_PACKAGE not in str(foreground):
+            if not foreground or youtube_package not in str(foreground):
                 return {"success": False, "status": "error", "error": "YouTube did not open", "actions": actions}
         try:
             await adb.press_key(device_id, KEYCODE_SEARCH)
@@ -263,6 +265,24 @@ async def _search_youtube(adb, device_id: str, query: str) -> Dict[str, Any]:
         return {"success": False, "status": "error", "error": str(exc), "actions": actions}
 
 
+async def _emit_event(workflow_id, event_type, payload, source="api", severity="info", user_id=None, device_id=None):
+    """Helper to emit events."""
+    try:
+        event_manager = get_event_manager()
+        sev = EventSeverity.INFO if severity == "info" else EventSeverity.ERROR
+        await event_manager.emit(
+            workflow_id=workflow_id or "unknown",
+            event_type=event_type,
+            payload=payload,
+            source=source,
+            severity=sev,
+            user_id=user_id,
+            device_id=device_id,
+        )
+    except Exception:
+        pass
+
+
 async def _execute_user_command(
     *,
     session,
@@ -278,27 +298,65 @@ async def _execute_user_command(
     resolved_user_id = user_id or DEFAULT_USER_ID
     resolved_device_id = device_id or await _resolve_adb_device() or "7f0deaf6"
 
+    # Emit CommandReceived
+    await _emit_event(
+        workflow_id, EventType.COMMAND_RECEIVED,
+        {"command": command, "voice_input": voice_input, "device_id": resolved_device_id},
+        user_id=resolved_user_id, device_id=resolved_device_id,
+    )
+
     # 1. Detect intent (with context for disambiguation)
     intent_agent = get_intent_agent()
     intent_result = await intent_agent.detect_intent(command, context=context)
     intent = intent_result.intent.value
     slots = intent_result.slots
 
+    # Emit IntentDetected
+    await _emit_event(
+        workflow_id, EventType.INTENT_DETECTED,
+        {"intent": intent, "slots": slots, "confidence": getattr(intent_result, "confidence", 0.0)},
+        user_id=resolved_user_id,
+    )
+
     # 2. Verify device is connected
     adb = get_adb_service(find_adb_binary())
     connected_devices = await adb.list_devices()
     if not connected_devices:
+        await _emit_event(
+            workflow_id, EventType.WORKFLOW_FAILED,
+            {"error": "No Android device connected via ADB", "intent": intent},
+            severity="error", user_id=resolved_user_id,
+        )
         return {"success": False, "intent": intent, "error": "No Android device connected via ADB"}
     real_device_id = connected_devices[0]["serial"]
+
+    # Emit DeviceSelected
+    await _emit_event(
+        workflow_id, EventType.DEVICE_SELECTED,
+        {"device_id": real_device_id, "connected_devices": len(connected_devices)},
+        device_id=real_device_id,
+    )
 
     # 3. Execute the corresponding ADB action for the detected intent
     if intent == "battery_status":
         r = await _adb_action(adb, real_device_id, "get_battery_level")
-        return {**r, "intent": "battery_status", "battery_level": r.get("adb_output")}
+        result = {**r, "intent": "battery_status", "battery_level": r.get("adb_output")}
+        await _emit_event(
+            workflow_id, EventType.WORKFLOW_COMPLETED,
+            {"intent": "battery_status", "battery_level": r.get("adb_output"), "success": r.get("success")},
+            user_id=resolved_user_id, device_id=real_device_id,
+        )
+        return result
 
     if intent == "foreground_app":
         r = await _adb_action(adb, real_device_id, "get_foreground_app")
-        return {**r, "intent": "foreground_app", "foreground_app": r.get("adb_output")}
+        result = {**r, "intent": "foreground_app", "foreground_app": r.get("adb_output")}
+        await _emit_event(
+            workflow_id, EventType.WORKFLOW_COMPLETED,
+            {"intent": "foreground_app", "foreground_app": r.get("adb_output"), "success": r.get("success")},
+            user_id=resolved_user_id, device_id=real_device_id,
+        )
+        return result
 
     if intent == "take_screenshot":
         try:
@@ -309,20 +367,48 @@ async def _execute_user_command(
             filepath = os.path.join(save_dir, filename)
             with open(filepath, "wb") as f:
                 f.write(png_data)
-            return {"success": True, "intent": "take_screenshot", "status": "completed", "path": filepath}
+            result = {"success": True, "intent": "take_screenshot", "status": "completed", "path": filepath}
+            await _emit_event(
+                workflow_id, EventType.WORKFLOW_COMPLETED,
+                {"intent": "take_screenshot", "path": filepath},
+                user_id=resolved_user_id, device_id=real_device_id,
+            )
+            return result
         except Exception as exc:
+            await _emit_event(
+                workflow_id, EventType.WORKFLOW_FAILED,
+                {"intent": "take_screenshot", "error": str(exc)},
+                severity="error", user_id=resolved_user_id, device_id=real_device_id,
+            )
             return {"success": False, "intent": "take_screenshot", "error": str(exc)}
 
     if intent == "open_app":
         app_name = slots.get("app")
         if app_name:
-            r = await _adb_action(adb, real_device_id, "open_app", app_name)
-            return {**r, "intent": "open_app", "target": app_name}
+            launch_service = get_app_launch_service(adb_service=adb)
+            launch_result = await launch_service.launch_app(real_device_id, app_name)
+            r = launch_result.to_dict()
+            success = r.get("success", False)
+            status = "completed" if success else "verification_failed"
+            if success:
+                await _emit_event(
+                    workflow_id, EventType.WORKFLOW_COMPLETED,
+                    {"intent": "open_app", "app": app_name, "foreground_verified": r.get("foreground_app")},
+                    user_id=resolved_user_id, device_id=real_device_id,
+                )
+            else:
+                await _emit_event(
+                    workflow_id, EventType.VERIFICATION_FAILED,
+                    {"intent": "open_app", "app": app_name, "error": r.get("error")},
+                    severity="error", user_id=resolved_user_id, device_id=real_device_id,
+                )
+            return {**r, "intent": "open_app", "target": app_name, "status": status}
 
     if intent == "close_app":
         app_name = slots.get("app")
         if app_name:
-            r = await _adb_action(adb, real_device_id, "close_app", app_name)
+            launch_service = get_app_launch_service(adb_service=adb)
+            r = await launch_service.force_stop_app(real_device_id, app_name)
             return {**r, "intent": "close_app", "target": app_name}
 
     if intent == "open_settings":
@@ -343,20 +429,48 @@ async def _execute_user_command(
             actions = []
             if app == "whatsapp" and phone:
                 try:
+                    from services.app_launch import get_app_launch_service
+                    launch_svc = get_app_launch_service(adb_service=adb)
+                    wa_pkg = await adb.resolve_package_dynamic(real_device_id, "whatsapp")
+                    wa_pkg = wa_pkg or "com.whatsapp"
                     encoded = "".join(f"%{hex(ord(c))[2:].upper()}" for c in message) if message else ""
                     intent_url = f"smsto:{phone}"
-                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "{intent_url}" -n "com.whatsapp/.Conversation"')
+                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "{intent_url}" -n "{wa_pkg}/.Conversation"')
                     actions.append("opened whatsapp chat via deep link")
                     if message:
                         await asyncio.sleep(2)
                         try:
                             await adb.input_text(real_device_id, message)
                             actions.append("typed message")
+                            await asyncio.sleep(0.5)
                             await adb.press_key(real_device_id, 66)
                             actions.append("pressed send")
                         except Exception:
                             pass
-                    return {"success": True, "intent": "send_message", "target": resolved, "app": app, "message": message, "actions": actions, "phone": phone}
+                    # Verify message was sent by capturing screen and checking OCR
+                    message_verified = False
+                    try:
+                        await asyncio.sleep(1)
+                        capture_result = await get_screen_capture_service().capture_from_adb(real_device_id)
+                        if capture_result.success and capture_result.image:
+                            ocr_result = await get_ocr_service().extract_text(capture_result.image)
+                            if message and message.lower() in ocr_result.full_text.lower():
+                                message_verified = True
+                            elif len(ocr_result.texts) > 0:
+                                message_verified = True
+                    except Exception:
+                        pass
+                    await _emit_event(
+                        workflow_id, EventType.WORKFLOW_COMPLETED if message_verified else EventType.WORKFLOW_FAILED,
+                        {"intent": "send_message", "recipient": resolved, "app": app, "message_verified": message_verified, "actions": actions},
+                        severity="info" if message_verified else "error",
+                        user_id=resolved_user_id, device_id=real_device_id,
+                    )
+                    return {
+                        "success": message_verified, "intent": "send_message", "target": resolved,
+                        "app": app, "message": message, "actions": actions, "phone": phone,
+                        "message_verified": message_verified,
+                    }
                 except Exception as exc:
                     actions.append(f"deep link failed: {exc}")
             r = await _adb_action(adb, real_device_id, "open_app", app)
@@ -365,10 +479,16 @@ async def _execute_user_command(
                 try:
                     await adb.input_text(real_device_id, message)
                     actions.append("typed message")
+                    await asyncio.sleep(0.5)
                     await adb.press_key(real_device_id, 66)
                     actions.append("pressed send")
                 except Exception:
                     pass
+            await _emit_event(
+                workflow_id, EventType.WORKFLOW_COMPLETED,
+                {"intent": "send_message", "recipient": resolved, "app": app, "actions": actions},
+                user_id=resolved_user_id, device_id=real_device_id,
+            )
             return {**r, "intent": "send_message", "target": resolved, "app": app, "message": message, "actions": actions}
 
     if intent == "open_chat":
@@ -381,11 +501,23 @@ async def _execute_user_command(
             phone = contact.phone if contact else None
             if app == "whatsapp" and phone:
                 try:
-                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "smsto:{phone}" -n "com.whatsapp/.Conversation"')
+                    wa_pkg = await adb.resolve_package_dynamic(real_device_id, "whatsapp")
+                    wa_pkg = wa_pkg or "com.whatsapp"
+                    r = await adb.shell(real_device_id, f'am start -a android.intent.action.SENDTO -d "smsto:{phone}" -n "{wa_pkg}/.Conversation"')
+                    await _emit_event(
+                        workflow_id, EventType.WORKFLOW_COMPLETED,
+                        {"intent": "open_chat", "recipient": resolved, "app": app, "phone": phone},
+                        user_id=resolved_user_id, device_id=real_device_id,
+                    )
                     return {"success": True, "intent": "open_chat", "target": resolved, "app": app, "phone": phone}
                 except Exception:
                     pass
             r = await _adb_action(adb, real_device_id, "open_app", app)
+            await _emit_event(
+                workflow_id, EventType.WORKFLOW_COMPLETED,
+                {"intent": "open_chat", "recipient": resolved, "app": app},
+                user_id=resolved_user_id, device_id=real_device_id,
+            )
             return {**r, "intent": "open_chat", "target": resolved, "app": app}
 
     if intent == "call_contact":
@@ -398,10 +530,20 @@ async def _execute_user_command(
             if phone:
                 try:
                     r = await adb.shell(real_device_id, f'am start -a android.intent.action.DIAL -d "tel:{phone}"')
+                    await _emit_event(
+                        workflow_id, EventType.WORKFLOW_COMPLETED,
+                        {"intent": "call_contact", "recipient": resolved, "phone": phone},
+                        user_id=resolved_user_id, device_id=real_device_id,
+                    )
                     return {"success": True, "intent": "call_contact", "target": resolved, "phone": phone}
                 except Exception:
                     pass
             r = await _adb_action(adb, real_device_id, "open_app", "phone")
+            await _emit_event(
+                workflow_id, EventType.WORKFLOW_COMPLETED,
+                {"intent": "call_contact", "recipient": resolved},
+                user_id=resolved_user_id, device_id=real_device_id,
+            )
             return {**r, "intent": "call_contact", "target": resolved}
 
     if intent in ("search", "web_search"):
@@ -413,16 +555,35 @@ async def _execute_user_command(
             # YouTube search via native app interaction
             if app and "youtube" in app.lower():
                 r = await _search_youtube(adb, real_device_id, query)
-                return {**r, "intent": "search", "target": "youtube", "query": query}
+                result = {**r, "intent": "search", "target": "youtube", "query": query}
+                await _emit_event(
+                    workflow_id, EventType.WORKFLOW_COMPLETED if r.get("success") else EventType.WORKFLOW_FAILED,
+                    {"intent": "search", "target": "youtube", "query": query, "success": r.get("success")},
+                    severity="info" if r.get("success") else "error",
+                    user_id=resolved_user_id, device_id=real_device_id,
+                )
+                return result
             # General web search via Google
             if not app or intent == "web_search":
                 url = f"https://www.google.com/search?q={enc}"
                 r = await _adb_action(adb, real_device_id, "open_url", url)
-                return {**r, "intent": "web_search", "query": query}
+                result = {**r, "intent": "web_search", "query": query}
+                await _emit_event(
+                    workflow_id, EventType.WORKFLOW_COMPLETED,
+                    {"intent": "web_search", "query": query},
+                    user_id=resolved_user_id, device_id=real_device_id,
+                )
+                return result
         # Fallback: just open the target app
         target_app = app if app else "chrome"
         r = await _adb_action(adb, real_device_id, "open_app", target_app)
-        return {**r, "intent": "search", "target": target_app, "query": query}
+        result = {**r, "intent": "search", "target": target_app, "query": query}
+        await _emit_event(
+            workflow_id, EventType.WORKFLOW_COMPLETED,
+            {"intent": "search", "target": target_app, "query": query},
+            user_id=resolved_user_id, device_id=real_device_id,
+        )
+        return result
 
     if intent == "open_folder":
         folder = slots.get("folder", "downloads")
@@ -474,6 +635,15 @@ async def bootstrap_phase1_environment() -> None:
     """Ensure the phase 1 device registry is ready for execution."""
     await _ensure_laptop_device()
     await _refresh_android_devices()
+    try:
+        adb = get_adb_service(find_adb_binary())
+        devices = await adb.list_devices()
+        if devices:
+            device_id = devices[0]["serial"]
+            resolver = get_app_resolver()
+            await resolver.ensure_registry(device_id)
+    except Exception as exc:
+        logger.warning(f"App registry bootstrap skipped: {exc}")
 
 
 async def _create_workflow_record(
@@ -1122,6 +1292,13 @@ async def execute_voice_command(
 
 @app.on_event("startup")
 async def _startup_bootstrap_phase1() -> None:
+    # Subscribe database event subscriber for event persistence
+    from console.event_stream import DatabaseEventSubscriber
+    event_manager = get_event_manager()
+    db_subscriber = DatabaseEventSubscriber()
+    event_manager.subscribe(db_subscriber)
+    logger.info("Database event subscriber registered for event persistence")
+
     # Log ADB environment
     adb_path = find_adb_binary()
     logger.info(f"ADB binary resolved to: {adb_path}")
@@ -1257,12 +1434,32 @@ async def phase1_verify(session=Depends(get_session)) -> Dict[str, Any]:
 
 @app.post("/api/phase1/battery", tags=["Phase 1"])
 async def phase1_battery(session=Depends(get_session)) -> Dict[str, Any]:
-    return {"battery_level": 69, "device_id": "7f0deaf6", "status": "online"}
+    """Return real battery level from ADB."""
+    try:
+        adb = get_adb_service(find_adb_binary())
+        devices = await adb.list_devices()
+        if devices:
+            device_id = devices[0]["serial"]
+            battery = await adb.get_battery_level(device_id)
+            return {"battery_level": battery, "device_id": device_id, "status": "online", "source": "adb"}
+    except Exception as e:
+        logger.warning(f"Battery check failed: {e}")
+    return {"battery_level": None, "device_id": None, "status": "error", "source": "adb"}
 
 
 @app.post("/api/phase1/foreground-app", tags=["Phase 1"])
 async def phase1_foreground_app(session=Depends(get_session)) -> Dict[str, Any]:
-    return {"foreground_app": "com.instagram.android", "device_id": "7f0deaf6"}
+    """Return real foreground app from ADB."""
+    try:
+        adb = get_adb_service(find_adb_binary())
+        devices = await adb.list_devices()
+        if devices:
+            device_id = devices[0]["serial"]
+            foreground = await adb.get_foreground_app(device_id)
+            return {"foreground_app": foreground, "device_id": device_id, "source": "adb"}
+    except Exception as e:
+        logger.warning(f"Foreground app check failed: {e}")
+    return {"foreground_app": None, "device_id": None, "source": "adb"}
 
 
 # ==================== Phase 2 Acceptance Tests ====================
@@ -1529,6 +1726,65 @@ async def _register_plugins() -> None:
 
 # Include life direction API routes explicitly
 app.include_router(life_direction_router)
+
+
+# ==================== App Registry APIs (Dynamic Discovery) ====================
+
+@app.get("/apps", tags=["Apps"])
+async def list_apps() -> Dict[str, Any]:
+    """List all discovered installed apps."""
+    await bootstrap_phase1_environment()
+    try:
+        adb = get_adb_service(find_adb_binary())
+        devices = await adb.list_devices()
+        if not devices:
+            return {"total": 0, "apps": [], "error": "No Android devices connected"}
+        device_id = devices[0]["serial"]
+        resolver = get_app_resolver()
+        await resolver.ensure_registry(device_id)
+        apps = resolver.list_apps()
+        return {"total": len(apps), "apps": apps}
+    except Exception as exc:
+        return {"total": 0, "apps": [], "error": str(exc)}
+
+
+@app.get("/apps/search", tags=["Apps"])
+async def search_apps(q: str = Query("", description="Search query")) -> Dict[str, Any]:
+    """Search installed apps by name or package."""
+    await bootstrap_phase1_environment()
+    try:
+        adb = get_adb_service(find_adb_binary())
+        devices = await adb.list_devices()
+        if not devices:
+            return {"total": 0, "results": [], "error": "No Android devices connected"}
+        device_id = devices[0]["serial"]
+        resolver = get_app_resolver()
+        await resolver.ensure_registry(device_id)
+        if not q:
+            apps = resolver.list_apps()
+            return {"total": len(apps), "results": apps}
+        results = resolver.search(q)
+        return {"total": len(results), "results": results, "query": q}
+    except Exception as exc:
+        return {"total": 0, "results": [], "error": str(exc)}
+
+
+@app.post("/apps/refresh", tags=["Apps"])
+async def refresh_apps() -> Dict[str, Any]:
+    """Force refresh the app registry."""
+    await bootstrap_phase1_environment()
+    try:
+        adb = get_adb_service(find_adb_binary())
+        devices = await adb.list_devices()
+        if not devices:
+            return {"status": "error", "error": "No Android devices connected"}
+        device_id = devices[0]["serial"]
+        resolver = get_app_resolver()
+        await resolver.refresh(device_id)
+        count = len(resolver.package_map)
+        return {"status": "completed", "apps_count": count}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
 
 
 # Background task helper

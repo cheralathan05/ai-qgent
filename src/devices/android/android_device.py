@@ -10,25 +10,10 @@ logger = logging.getLogger(__name__)
 
 
 class AndroidDevice(Device):
-    """Android device abstraction for ADB-driven control."""
+    """Android device abstraction for ADB-driven control.
 
-    APP_PACKAGE_MAP = {
-        "chrome": "com.android.chrome",
-        "instagram": "com.instagram.android",
-        "whatsapp": "com.whatsapp",
-        "youtube": "com.google.android.youtube",
-        "maps": "com.google.android.apps.maps",
-        "gmail": "com.google.android.gm",
-    }
-
-    APP_MAIN_ACTIVITY = {
-        "com.android.chrome": "com.google.android.apps.chrome.Main",
-        "com.instagram.android": "com.instagram.mainactivity.MainActivity",
-        "com.whatsapp": "com.whatsapp.Main",
-        "com.google.android.youtube": "com.google.android.youtube.HomeActivity",
-        "com.google.android.apps.maps": "com.google.android.maps.MapsActivity",
-        "com.google.android.gm": "com.google.android.gm.ConversationListActivityGmail",
-    }
+    No hardcoded app mappings. All resolution is dynamic via AppResolver.
+    """
 
     def __init__(self, device_id: str, adb_client=None, **kwargs):
         super().__init__(device_id)
@@ -38,11 +23,15 @@ class AndroidDevice(Device):
             from services.adb_service import get_adb_service
             self.adb = get_adb_service()
 
-    def _resolve_package_name(self, app_name: str) -> str:
+    async def _resolve_package_name(self, app_name: str) -> str:
         if app_name is None:
             logger.warning("_resolve_package_name called with None app_name")
             return ""
-        return self.APP_PACKAGE_MAP.get(app_name.lower(), app_name)
+        from services.app_resolver import get_app_resolver
+        resolver = get_app_resolver()
+        await resolver.ensure_registry(self.device_id)
+        resolved = resolver.resolve(app_name)
+        return resolved or app_name.strip().lower()
 
     async def get_info(self) -> DeviceInfo:
         if not self.adb:
@@ -169,29 +158,10 @@ class AndroidDevice(Device):
         if not self.adb:
             return {"status": "error", "message": "ADB client unavailable"}
 
-        package_name = self._resolve_package_name(app_name)
-        activity = self.APP_MAIN_ACTIVITY.get(package_name)
-
-        try:
-            launch_error = None
-            if activity:
-                try:
-                    await self.adb.start_activity(self.device_id, package_name, activity)
-                except Exception as exc:
-                    launch_error = exc
-            if not activity or launch_error is not None:
-                await self.adb.open_app(self.device_id, package_name)
-
-            await asyncio.sleep(2)
-            foreground_app = await self.get_foreground_app()
-            return {
-                "status": "success",
-                "app": package_name,
-                "foreground_app": foreground_app,
-            }
-
-        except Exception as exc:
-            return {"status": "error", "message": str(exc)}
+        from services.app_launch import get_app_launch_service
+        launch_service = get_app_launch_service(adb_service=self.adb)
+        result = await launch_service.launch_app(self.device_id, app_name)
+        return result.to_dict()
 
     async def close_app(self, app_name: str) -> Dict[str, Any]:
         if not app_name:
@@ -200,7 +170,7 @@ class AndroidDevice(Device):
             return {"status": "error", "message": "ADB client unavailable"}
 
         try:
-            package_name = self._resolve_package_name(app_name)
+            package_name = await self._resolve_package_name(app_name)
             await self.adb.close_app(self.device_id, package_name)
             return {"status": "success", "app": package_name}
         except Exception as exc:
@@ -221,7 +191,7 @@ class AndroidDevice(Device):
             return {"status": "error", "message": "ADB client unavailable"}
 
         try:
-            package_name = self._resolve_package_name(app_name)
+            package_name = await self._resolve_package_name(app_name)
             current_app = await self.get_foreground_app()
             return {
                 "status": "success" if current_app == package_name else "failure",
@@ -295,7 +265,7 @@ class AndroidDevice(Device):
         if not self.adb:
             return {"status": "error", "message": "ADB client unavailable"}
 
-        package_name = self._resolve_package_name(app_name)
+        package_name = await self._resolve_package_name(app_name)
         for _ in range(timeout_seconds):
             current = await self.get_foreground_app()
             if current == package_name:

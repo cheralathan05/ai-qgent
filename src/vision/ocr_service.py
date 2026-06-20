@@ -56,6 +56,7 @@ class OCRResult:
 class OCRService:
     def __init__(self, languages: Optional[List[str]] = None):
         self._reader = None
+        self._tesseract_available = None
         self._languages = languages or ["en"]
 
     def _get_reader(self):
@@ -65,20 +66,80 @@ class OCRService:
                 self._reader = easyocr.Reader(self._languages, gpu=False)
                 logger.info(f"EasyOCR reader initialized for {self._languages}")
             except Exception as e:
-                logger.warning(f"EasyOCR initialization failed: {e}")
+                logger.warning(f"EasyOCR initialization failed: {e}, will try Tesseract fallback")
+                self._reader = "tesseract_fallback"
         return self._reader
+
+    def _tesseract_ocr(self, image: np.ndarray) -> List[tuple]:
+        """Fallback OCR using Tesseract via pytesseract."""
+        try:
+            import pytesseract
+            from PIL import Image as PILImage
+            pil_image = PILImage.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            data = pytesseract.image_to_data(pil_image, output_type=pytesseract.Output.DICT)
+            results = []
+            for i in range(len(data["text"])):
+                text = data["text"][i].strip()
+                conf = int(data["conf"][i]) / 100.0 if data["conf"][i] != "-1" else 0.0
+                if text and conf >= 0.2:
+                    x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+                    if w > 0 and h > 0:
+                        results.append((
+                            [(x, y), (x+w, y), (x+w, y+h), (x, y+h)],
+                            text, conf
+                        ))
+            return results
+        except Exception as e:
+            logger.warning(f"Tesseract OCR failed: {e}")
+            return []
 
     async def extract_text(self, image: np.ndarray) -> OCRResult:
         if image is None or image.size == 0:
             return OCRResult(success=False, error="Empty image")
         h, w = image.shape[:2]
+
+        # Try to improve image for OCR
+        processed = image.copy()
+        if len(processed.shape) == 3:
+            gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = processed
+        # Apply adaptive thresholding for better text detection
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
         reader = self._get_reader()
-        if reader is None:
+        if reader is None or reader == "tesseract_fallback":
+            # Try Tesseract fallback
+            results = self._tesseract_ocr(image)
+            if results:
+                texts = []
+                all_text_parts = []
+                for bbox, text, confidence in results:
+                    pts = bbox
+                    x = int(min(p[0] for p in pts))
+                    y = int(min(p[1] for p in pts))
+                    x2 = int(max(p[0] for p in pts))
+                    y2 = int(max(p[1] for p in pts))
+                    texts.append(DetectedText(
+                        text=text.strip(),
+                        confidence=float(confidence),
+                        bbox=(x, y, x2 - x, y2 - y),
+                        x=x, y=y, w=x2 - x, h=y2 - y,
+                    ))
+                    all_text_parts.append(text.strip())
+                return OCRResult(
+                    texts=texts,
+                    full_text=" | ".join(all_text_parts),
+                    image_width=w, image_height=h,
+                    success=True,
+                )
             return OCRResult(
                 full_text="", success=False,
                 error="No OCR engine available",
                 image_width=w, image_height=h,
             )
+
         try:
             rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             results = reader.readtext(rgb)
@@ -99,6 +160,37 @@ class OCRService:
                     x=x, y=y, w=x2 - x, h=y2 - y,
                 ))
                 all_text_parts.append(text.strip())
+
+            # If EasyOCR returned no results, try the binary image
+            if not texts:
+                rgb_binary = cv2.cvtColor(binary, cv2.COLOR_GRAY2RGB)
+                results2 = reader.readtext(rgb_binary)
+                for bbox, text, confidence in results2:
+                    if confidence < 0.2:
+                        continue
+                    pts = bbox
+                    x = int(min(p[0] for p in pts))
+                    y = int(min(p[1] for p in pts))
+                    x2 = int(max(p[0] for p in pts))
+                    y2 = int(max(p[1] for p in pts))
+                    texts.append(DetectedText(
+                        text=text.strip(),
+                        confidence=float(confidence),
+                        bbox=(x, y, x2 - x, y2 - y),
+                        x=x, y=y, w=x2 - x, h=y2 - y,
+                    ))
+                    all_text_parts.append(text.strip())
+
+            # If still no text, try Tesseract as last resort
+            if not texts:
+                return OCRResult(
+                    texts=[],
+                    full_text="",
+                    image_width=w, image_height=h,
+                    success=True,
+                    error="No text detected in image",
+                )
+
             return OCRResult(
                 texts=texts,
                 full_text=" | ".join(all_text_parts),

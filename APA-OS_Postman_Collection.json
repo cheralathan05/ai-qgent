@@ -1,46 +1,40 @@
 {
   "info": {
-    "name": "APA-OS API (Phase 1 + Phase 2 + Life Direction)",
+    "name": "APA-OS API — Complete (Phases 1, 2, 3 + Life Direction + WebSockets)",
     "description": "Complete API collection for APA-OS Phone Intelligence Platform. Base URL: http://localhost:8000",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     { "key": "base_url", "value": "http://localhost:8000" },
+    { "key": "ws_url", "value": "ws://localhost:8000" },
     { "key": "device_id", "value": "7f0deaf6" },
     { "key": "user_id", "value": "user_01" },
     { "key": "workflow_id", "value": "wf_example" },
     { "key": "approval_id", "value": "app_example" },
-    { "key": "client_id", "value": "client_01" }
+    { "key": "client_id", "value": "client_01" },
+    { "key": "session_id", "value": "sess_01" },
+    { "key": "conversation_id", "value": "conv_01" },
+    { "key": "doc_id", "value": "doc_001" },
+    { "key": "entity_id", "value": "ent_001" },
+    { "key": "agent_id", "value": "knowledge_agent" }
   ],
   "item": [
     {
       "name": "🔍 System",
       "item": [
         {
-          "name": "GET /  — Root Health Check",
+          "name": "GET / — Root Health Check",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/", "host": ["{{base_url}}"], "path": [""] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"name\": \"APA-OS Backend\",\n  \"version\": \"1.0.0\",\n  \"status\": \"running\"\n}"
-            }
-          ]
+          }
         },
         {
           "name": "GET /health — Health Check",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"status\": \"healthy\",\n  \"timestamp\": \"2026-06-20T12:00:00.000Z\"\n}"
-            }
-          ]
+          }
         }
       ]
     },
@@ -48,97 +42,60 @@
       "name": "📋 Workflows",
       "item": [
         {
-          "name": "GET /workflows — List Workflows",
+          "name": "GET /workflows — List",
           "request": {
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/workflows?user_id={{user_id}}&limit=10&offset=0",
-              "host": ["{{base_url}}"],
-              "path": ["workflows"],
+              "host": ["{{base_url}}"], "path": ["workflows"],
               "query": [
-                { "key": "user_id", "value": "{{user_id}}", "description": "Filter by user" },
-                { "key": "status", "value": "", "description": "Filter by status (pending/executing/completed/failed)", "disabled": true },
-                { "key": "limit", "value": "10", "description": "Page size (max 100)" },
-                { "key": "offset", "value": "0", "description": "Pagination offset" }
+                { "key": "user_id", "value": "{{user_id}}" },
+                { "key": "status", "value": "", "disabled": true },
+                { "key": "limit", "value": "10" },
+                { "key": "offset", "value": "0" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"total\": 1,\n  \"limit\": 10,\n  \"offset\": 0,\n  \"workflows\": [\n    {\n      \"id\": \"wf_abc123\",\n      \"user_id\": \"user_01\",\n      \"command\": \"Open Instagram\",\n      \"intent\": \"open_app\",\n      \"status\": \"completed\",\n      \"start_time\": \"2026-06-20T12:00:00\",\n      \"end_time\": \"2026-06-20T12:00:05\",\n      \"duration_ms\": 5000\n    }\n  ]\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "GET /workflows/{workflow_id} — Get Workflow",
+          "name": "GET /workflows/{workflow_id} — Get",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/workflows/{{workflow_id}}", "host": ["{{base_url}}"], "path": ["workflows", "{{workflow_id}}"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"id\": \"wf_abc123\",\n  \"user_id\": \"user_01\",\n  \"command\": \"Open Instagram\",\n  \"intent\": \"open_app\",\n  \"status\": \"completed\",\n  \"plan\": [{\"type\": \"launch_app\", \"app\": \"instagram\"}],\n  \"result\": {\"results\": [{\"status\": \"success\"}]},\n  \"error\": null,\n  \"device_id\": \"7f0deaf6\",\n  \"start_time\": \"2026-06-20T12:00:00\",\n  \"end_time\": \"2026-06-20T12:00:05\",\n  \"duration_ms\": 5000,\n  \"requires_approval\": false,\n  \"approval_status\": null,\n  \"created_at\": \"2026-06-20T12:00:00\",\n  \"updated_at\": \"2026-06-20T12:00:05\"\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "POST /workflows — Execute Command",
+          "name": "POST /workflows — Create & Execute",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/workflows", "host": ["{{base_url}}"], "path": ["workflows"] },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"command\": \"Open Instagram\",\n  \"device_id\": \"{{device_id}}\",\n  \"session_id\": \"sess_01\",\n  \"voice_input\": false\n}"
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"command\": \"Open Instagram\",\n  \"device_id\": \"{{device_id}}\",\n  \"session_id\": \"{{session_id}}\",\n  \"voice_input\": false\n}"
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"workflow_id\": \"wf_abc123\",\n  \"success\": true,\n  \"intent\": \"open_app\",\n  \"target\": \"instagram\",\n  \"status\": \"completed\",\n  \"message\": \"Instagram is ready.\",\n  \"command\": \"Open Instagram\",\n  \"execution_id\": \"exec_abc123\",\n  \"device_selection\": {\"device_id\": \"7f0deaf6\", \"available\": true, \"device_type\": \"android\", \"display_name\": \"Android Device\"},\n  \"assistant_text\": \"Instagram is ready.\",\n  \"session\": {\"session_id\": \"sess_01\", \"user_id\": \"user_01\"}\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "POST /workflows/{workflow_id}/cancel",
+          "name": "POST /workflows/{id}/cancel",
           "request": {
             "method": "POST",
             "url": { "raw": "{{base_url}}/workflows/{{workflow_id}}/cancel", "host": ["{{base_url}}"], "path": ["workflows", "{{workflow_id}}", "cancel"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"status\": \"cancelled\",\n  \"workflow_id\": \"wf_abc123\"\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "POST /workflows/{workflow_id}/retry",
+          "name": "POST /workflows/{id}/retry",
           "request": {
             "method": "POST",
             "url": { "raw": "{{base_url}}/workflows/{{workflow_id}}/retry", "host": ["{{base_url}}"], "path": ["workflows", "{{workflow_id}}", "retry"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"status\": \"retrying\",\n  \"new_workflow_id\": \"wf_def456\",\n  \"original_workflow_id\": \"wf_abc123\"\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "POST /workflows/{workflow_id}/replay",
+          "name": "POST /workflows/{id}/replay",
           "request": {
             "method": "POST",
             "url": { "raw": "{{base_url}}/workflows/{{workflow_id}}/replay", "host": ["{{base_url}}"], "path": ["workflows", "{{workflow_id}}", "replay"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"status\": \"replaying\",\n  \"new_workflow_id\": \"wf_ghi789\",\n  \"original_workflow_id\": \"wf_abc123\"\n}"
-            }
-          ]
+          }
         }
       ]
     },
@@ -146,40 +103,42 @@
       "name": "⚡ Commands",
       "item": [
         {
-          "name": "POST /command — Execute Command (Shortcut)",
+          "name": "POST /command — Execute Command",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/command", "host": ["{{base_url}}"], "path": ["command"] },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"command\": \"Open WhatsApp and send Hello to Guru\",\n  \"device_id\": \"{{device_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"sess_01\"\n}"
+              "raw": "{\n  \"command\": \"Open WhatsApp and send Hello to Guru\",\n  \"device_id\": \"{{device_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"{{session_id}}\"\n}"
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"intent\": \"send_message\",\n  \"target\": \"guru\",\n  \"status\": \"completed\",\n  \"message\": \"Message sent to Guru successfully.\",\n  \"workflow_id\": \"wf_abc123\",\n  \"command\": \"Open WhatsApp and send Hello to Guru\",\n  \"transcript\": null,\n  \"execution_id\": \"exec_abc123\",\n  \"result\": {},\n  \"device_selection\": {\"device_id\": \"7f0deaf6\", \"available\": true, \"device_type\": \"android\", \"display_name\": \"Android Device\"}\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "POST /execute — Execute Existing Workflow",
+          "name": "POST /execute — Execute Workflow by ID",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/execute", "host": ["{{base_url}}"], "path": ["execute"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"workflow_id\": \"{{workflow_id}}\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"execution_id\": \"exec_abc123\",\n  \"status\": \"completed\"\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"workflow_id\": \"{{workflow_id}}\"\n}" }
+          }
+        },
+        {
+          "name": "POST /voice — Voice Command (file upload)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "multipart/form-data" }],
+            "url": { "raw": "{{base_url}}/voice?device_id={{device_id}}&user_id={{user_id}}&session_id={{session_id}}", "host": ["{{base_url}}"], "path": ["voice"],
+              "query": [
+                { "key": "device_id", "value": "{{device_id}}" },
+                { "key": "user_id", "value": "{{user_id}}" },
+                { "key": "session_id", "value": "{{session_id}}" }
+              ]
+            },
+            "body": { "mode": "formdata", "formdata": [
+              { "key": "audio_file", "type": "file", "src": "", "description": "Select an audio file (.wav, .mp3)" }
+            ]}
+          }
         }
       ]
     },
@@ -191,45 +150,27 @@
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/devices", "host": ["{{base_url}}"], "path": ["devices"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"total\": 1,\n  \"devices\": [{\"device_id\": \"7f0deaf6\", \"device_type\": \"android\", \"display_name\": \"Android Device\", \"status\": \"connected\"}]\n}"
-            }
-          ]
+          }
+        },
+        {
+          "name": "GET /device/list — List (alias)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/device/list", "host": ["{{base_url}}"], "path": ["device", "list"] }
+          }
         },
         {
           "name": "GET /devices/{device_id} — Get Device",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/devices/{{device_id}}", "host": ["{{base_url}}"], "path": ["devices", "{{device_id}}"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"device_id\": \"7f0deaf6\",\n  \"device_type\": \"android\",\n  \"display_name\": \"Android Device\",\n  \"status\": \"connected\",\n  \"is_locked\": false,\n  \"battery_level\": 85,\n  \"foreground_app\": \"com.instagram.android\"\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "GET /device/status — Device Status",
+          "name": "GET /device/status — ADB Status",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/device/status", "host": ["{{base_url}}"], "path": ["device", "status"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"connected\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"model\": \"Android SDK built for x86\"\n}"
-            }
-          ]
-        },
-        {
-          "name": "GET /device/list — Device List (alias)",
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/device/list", "host": ["{{base_url}}"], "path": ["device", "list"] }
           }
         }
       ]
@@ -238,67 +179,46 @@
       "name": "✅ Approvals",
       "item": [
         {
-          "name": "GET /approvals — List Approvals",
+          "name": "GET /approvals — List Pending",
           "request": {
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/approvals?status=pending&limit=10",
-              "host": ["{{base_url}}"],
-              "path": ["approvals"],
+              "host": ["{{base_url}}"], "path": ["approvals"],
               "query": [
-                { "key": "status", "value": "pending", "description": "Filter: pending/approved/rejected" },
+                { "key": "status", "value": "pending" },
                 { "key": "limit", "value": "10" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"total\": 1,\n  \"approvals\": [{\"id\": \"app_001\", \"workflow_id\": \"wf_abc\", \"type\": \"send_message\", \"payload\": {}, \"preview\": null, \"explanation\": null, \"requested_at\": \"2026-06-20T12:00:00\", \"status\": \"pending\"}]\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "POST /approvals/{approval_id}/approve",
+          "name": "POST /approvals/{id}/approve",
           "request": {
             "method": "POST",
             "url": {
               "raw": "{{base_url}}/approvals/{{approval_id}}/approve?decided_by={{user_id}}&reason=Looks%20good",
-              "host": ["{{base_url}}"],
-              "path": ["approvals", "{{approval_id}}", "approve"],
+              "host": ["{{base_url}}"], "path": ["approvals", "{{approval_id}}", "approve"],
               "query": [
                 { "key": "decided_by", "value": "{{user_id}}" },
                 { "key": "reason", "value": "Looks good" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"status\": \"approved\",\n  \"approval_id\": \"app_001\"\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "POST /approvals/{approval_id}/reject",
+          "name": "POST /approvals/{id}/reject",
           "request": {
             "method": "POST",
             "url": {
               "raw": "{{base_url}}/approvals/{{approval_id}}/reject?decided_by={{user_id}}&reason=Not%20now",
-              "host": ["{{base_url}}"],
-              "path": ["approvals", "{{approval_id}}", "reject"],
+              "host": ["{{base_url}}"], "path": ["approvals", "{{approval_id}}", "reject"],
               "query": [
                 { "key": "decided_by", "value": "{{user_id}}" },
                 { "key": "reason", "value": "Not now" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"status\": \"rejected\",\n  \"approval_id\": \"app_001\"\n}"
-            }
-          ]
+          }
         }
       ]
     },
@@ -306,13 +226,12 @@
       "name": "📜 Audit & Events",
       "item": [
         {
-          "name": "GET /audit — List Audit Logs",
+          "name": "GET /audit — Audit Log",
           "request": {
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/audit?user_id={{user_id}}&limit=10&offset=0",
-              "host": ["{{base_url}}"],
-              "path": ["audit"],
+              "host": ["{{base_url}}"], "path": ["audit"],
               "query": [
                 { "key": "user_id", "value": "{{user_id}}" },
                 { "key": "action_type", "value": "", "disabled": true },
@@ -320,34 +239,21 @@
                 { "key": "offset", "value": "0" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"total\": 1,\n  \"limit\": 10,\n  \"offset\": 0,\n  \"events\": [{\"id\": \"aud_001\", \"user_id\": \"user_01\", \"action_type\": \"workflow_completed\", \"resource_type\": \"workflow\", \"resource_id\": \"wf_abc\", \"result\": \"success\", \"timestamp\": \"2026-06-20T12:00:00\", \"details\": {}}]\n}"
-            }
-          ]
+          }
         },
         {
           "name": "GET /events/{workflow_id} — Workflow Events",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/events/{{workflow_id}}", "host": ["{{base_url}}"], "path": ["events", "{{workflow_id}}"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"workflow_id\": \"wf_abc123\",\n  \"total\": 10,\n  \"events\": [\n    {\"id\": \"evt_001\", \"event_type\": \"command_received\", \"severity\": \"info\", \"payload\": {\"command\": \"Open Instagram\"}, \"timestamp\": \"2026-06-20T12:00:00\"},\n    {\"id\": \"evt_002\", \"event_type\": \"intent_detected\", \"severity\": \"info\", \"payload\": {}, \"timestamp\": \"2026-06-20T12:00:00\"},\n    {\"id\": \"evt_003\", \"event_type\": \"execution_completed\", \"severity\": \"info\", \"payload\": {}, \"timestamp\": \"2026-06-20T12:00:05\"}\n  ]\n}"
-            }
-          ]
+          }
         },
         {
           "name": "GET /events/stream/{workflow_id} — SSE Stream",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/events/stream/{{workflow_id}}", "host": ["{{base_url}}"], "path": ["events", "stream", "{{workflow_id}}"] }
-          },
-          "description": "Server-Sent Events stream. Opens a long-lived connection that pushes events as they occur."
+          }
         }
       ]
     },
@@ -355,25 +261,18 @@
       "name": "📊 Metrics",
       "item": [
         {
-          "name": "GET /metrics — List Metrics",
+          "name": "GET /metrics — System Metrics",
           "request": {
             "method": "GET",
             "url": {
               "raw": "{{base_url}}/metrics?limit=10",
-              "host": ["{{base_url}}"],
-              "path": ["metrics"],
+              "host": ["{{base_url}}"], "path": ["metrics"],
               "query": [
                 { "key": "metric_type", "value": "", "disabled": true },
                 { "key": "limit", "value": "10" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"total\": 1,\n  \"metrics\": [{\"id\": \"met_001\", \"type\": \"workflow\", \"name\": \"execution_time\", \"value\": 5000.0, \"unit\": \"ms\", \"recorded_at\": \"2026-06-20T12:00:00\"}]\n}"
-            }
-          ]
+          }
         }
       ]
     },
@@ -386,241 +285,136 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase1/open-app", "host": ["{{base_url}}"], "path": ["api", "phase1", "open-app"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"command\": \"Open Instagram\",\n  \"device_id\": \"{{device_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"sess_01\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"intent\": \"open_app\",\n  \"target\": \"instagram\",\n  \"status\": \"completed\",\n  \"message\": \"Instagram is ready.\",\n  \"workflow_id\": \"wf_abc\",\n  \"command\": \"Open Instagram\",\n  \"transcript\": null\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"command\": \"Open Instagram\",\n  \"device_id\": \"{{device_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"{{session_id}}\"\n}" }
+          }
         },
         {
           "name": "GET /api/phase1/verify",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/api/phase1/verify", "host": ["{{base_url}}"], "path": ["api", "phase1", "verify"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"phase1_verified\": true,\n  \"workflows_stored\": true,\n  \"events_system_active\": true,\n  \"workflow_count\": 1,\n  \"has_android_device\": true,\n  \"has_windows_device\": false\n}"
-            }
-          ]
+          }
         },
         {
           "name": "POST /api/phase1/battery",
           "request": {
             "method": "POST",
             "url": { "raw": "{{base_url}}/api/phase1/battery", "host": ["{{base_url}}"], "path": ["api", "phase1", "battery"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"battery_level\": 69,\n  \"device_id\": \"7f0deaf6\",\n  \"status\": \"online\"\n}"
-            }
-          ]
+          }
         },
         {
           "name": "POST /api/phase1/foreground-app",
           "request": {
             "method": "POST",
             "url": { "raw": "{{base_url}}/api/phase1/foreground-app", "host": ["{{base_url}}"], "path": ["api", "phase1", "foreground-app"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"foreground_app\": \"com.instagram.android\",\n  \"device_id\": \"7f0deaf6\"\n}"
-            }
-          ]
+          }
         }
       ]
     },
     {
-      "name": "🧠 Phase 1 — Screen Memory & App Knowledge",
+      "name": "🧠 Layer APIs — Screen Memory & App Knowledge",
       "item": [
         {
           "name": "GET /api/screen-memory/{device_id}",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/api/screen-memory/{{device_id}}", "host": ["{{base_url}}"], "path": ["api", "screen-memory", "{{device_id}}"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"device_id\": \"7f0deaf6\",\n  \"current_screen\": {\"screen_name\": \"feed\", \"app_name\": \"instagram\"},\n  \"previous_screen\": null,\n  \"history_count\": 1,\n  \"recent_changes\": []\n}"
-            }
-          ]
+          }
         },
         {
           "name": "DELETE /api/screen-memory/{device_id}",
           "request": {
             "method": "DELETE",
             "url": { "raw": "{{base_url}}/api/screen-memory/{{device_id}}", "host": ["{{base_url}}"], "path": ["api", "screen-memory", "{{device_id}}"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"status\": \"cleared\",\n  \"device_id\": \"7f0deaf6\"\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "GET /api/app-knowledge — List All Apps",
+          "name": "GET /api/app-knowledge",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/api/app-knowledge", "host": ["{{base_url}}"], "path": ["api", "app-knowledge"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"apps\": [\"instagram\", \"whatsapp\", \"chrome\", \"youtube\", \"telegram\", \"discord\", \"messenger\", \"gmail\", \"maps\", \"twitter\", \"linkedin\", \"settings\", \"phone\"],\n  \"total\": 13\n}"
-            }
-          ]
+          }
         },
         {
           "name": "GET /api/app-knowledge/{app_name}",
           "request": {
             "method": "GET",
-            "url": { "raw": "{{base_url}}/api/app-knowledge/instagram", "host": ["{{base_url}}"], "path": ["api", "app-knowledge", "instagram"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"app\": \"instagram\",\n  \"package\": \"com.instagram.android\",\n  \"screens\": [\"feed\", \"dm_inbox\", \"dm_chat\", \"profile\", \"reels\", \"settings\", \"search\"],\n  \"workflows\": [\"open_dm\", \"open_chat\", \"send_message\"],\n  \"navigation_paths\": [{\"from\": \"feed\", \"to\": \"dm_inbox\"}, {\"from\": \"dm_inbox\", \"to\": \"dm_chat\"}, {\"from\": \"dm_inbox\", \"to\": \"search\"}, {\"from\": \"feed\", \"to\": \"profile\"}]\n}"
-            }
-          ]
+            "url": { "raw": "{{base_url}}/api/app-knowledge/whatsapp", "host": ["{{base_url}}"], "path": ["api", "app-knowledge", "whatsapp"] }
+          }
         }
       ]
     },
     {
-      "name": "👁️ Phase 1 — Visual & Navigation",
+      "name": "👁️ Layer APIs — Visual, Navigation, Verification, Plugins",
       "item": [
         {
           "name": "POST /api/visual/classify",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": {
               "raw": "{{base_url}}/api/visual/classify?package_name=com.instagram.android&text_content=Instagram%20feed",
-              "host": ["{{base_url}}"],
-              "path": ["api", "visual", "classify"],
+              "host": ["{{base_url}}"], "path": ["api", "visual", "classify"],
               "query": [
                 { "key": "package_name", "value": "com.instagram.android" },
                 { "key": "text_content", "value": "Instagram feed" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"screen_type\": \"instagram_feed\",\n  \"app_name\": \"Instagram\",\n  \"confidence\": 0.85\n}"
-            }
-          ]
+          }
         },
         {
           "name": "POST /api/navigate/plan",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": {
               "raw": "{{base_url}}/api/navigate/plan?command=Open%20Instagram%20DM",
-              "host": ["{{base_url}}"],
-              "path": ["api", "navigate", "plan"],
-              "query": [
-                { "key": "command", "value": "Open Instagram DM" }
-              ]
+              "host": ["{{base_url}}"], "path": ["api", "navigate", "plan"],
+              "query": [{ "key": "command", "value": "Open Instagram DM" }]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"command\": \"Open Instagram DM\",\n  \"steps\": [{\"action\": \"open_app\", \"target\": \"instagram\"}, {\"action\": \"click\", \"target\": \"DM\"}],\n  \"total_steps\": 2\n}"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "🔬 Phase 1 — Action Verification & Plugins",
-      "item": [
+          }
+        },
         {
           "name": "POST /api/verify/action",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": {
               "raw": "{{base_url}}/api/verify/action?action_type=launch_app&device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "verify", "action"],
+              "host": ["{{base_url}}"], "path": ["api", "verify", "action"],
               "query": [
                 { "key": "action_type", "value": "launch_app" },
                 { "key": "device_id", "value": "{{device_id}}" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"action_type\": \"launch_app\",\n  \"passed\": true,\n  \"message\": \"App confirmed in foreground\",\n  \"confidence\": 0.99,\n  \"scores\": {\"verification_score\": 1.0, \"confidence_score\": 0.99, \"reliability_score\": 0.99, \"execution_score\": 0.995}\n}"
-            }
-          ]
+          }
         },
         {
-          "name": "GET /api/plugins — List Plugins",
+          "name": "GET /api/plugins — List",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/api/plugins", "host": ["{{base_url}}"], "path": ["api", "plugins"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"total\": 1,\n  \"plugins\": [{\"name\": \"whatsapp\", \"version\": \"1.0.0\", \"description\": \"WhatsApp automation plugin\", \"actions\": [\"send_message\", \"open_chat\"]}]\n}"
-            }
-          ]
+          }
         },
         {
           "name": "POST /api/plugins/{app_name}/execute",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": {
               "raw": "{{base_url}}/api/plugins/whatsapp/execute?action=send_message",
-              "host": ["{{base_url}}"],
-              "path": ["api", "plugins", "whatsapp", "execute"],
-              "query": [
-                { "key": "action", "value": "send_message" },
-                { "key": "params", "value": "", "disabled": true }
-              ]
+              "host": ["{{base_url}}"], "path": ["api", "plugins", "whatsapp", "execute"],
+              "query": [{ "key": "action", "value": "send_message" }]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"data\": {},\n  \"error\": null\n}"
-            }
-          ]
+          }
         },
         {
           "name": "GET /api/debug/adb — ADB Debug",
           "request": {
             "method": "GET",
             "url": { "raw": "{{base_url}}/api/debug/adb", "host": ["{{base_url}}"], "path": ["api", "debug", "adb"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"adb_available\": true,\n  \"adb_path\": \"path/to/adb\",\n  \"connected_devices\": [\"7f0deaf6\"],\n  \"7f0deaf6\": {\"model\": \"Android SDK built for x86\", \"battery\": 85}\n}"
-            }
-          ]
+          }
         }
       ]
     },
     {
-      "name": "📊 Phase 1 — Observability",
+      "name": "📊 Layer APIs — Observability",
       "item": [
         {
           "name": "GET /api/observability/summary",
@@ -654,21 +448,8 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/screen/capture", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "capture"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"width\": 1080,\n  \"height\": 1920,\n  \"filepath\": \"screenshots/7f0deaf6_20260620_120000.png\",\n  \"captured_at\": \"2026-06-20T12:00:00\"\n}"
-            },
-            {
-              "name": "No ADB Device",
-              "body": "{\n  \"success\": false,\n  \"error\": \"No Android device connected via ADB\"\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\"\n}" }
+          }
         },
         {
           "name": "POST /api/phase2/screen/ocr",
@@ -676,35 +457,17 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/screen/ocr", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "ocr"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"full_text\": \"Instagram\\nFeed\\nLiked by john 30m ago\",\n  \"texts\": [\n    {\"text\": \"Instagram\", \"confidence\": 0.98, \"x\": 100, \"y\": 50, \"w\": 200, \"h\": 30},\n    {\"text\": \"Feed\", \"confidence\": 0.95, \"x\": 100, \"y\": 100, \"w\": 100, \"h\": 20}\n  ],\n  \"text_count\": 2\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\"\n}" }
+          }
         },
         {
-          "name": "POST /api/phase2/screen/analyze — Full Pipeline",
+          "name": "POST /api/phase2/screen/analyze",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/screen/analyze", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "analyze"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"foreground_app\": \"com.whatsapp\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"capture\": {\"width\": 1080, \"height\": 1920, \"filepath\": \"...\", \"captured_at\": \"...\"},\n  \"ocr\": {\"full_text\": \"WhatsApp\\nChats\\nGuru\\nMom\", \"text_count\": 4, \"texts\": [...]},\n  \"ui_elements\": {\"total\": 12, \"buttons\": 3, \"inputs\": 1, \"icons\": 5, \"text_regions\": 3},\n  \"layout\": {\"type\": \"list\", \"sections\": [{\"type\": \"status_bar\"}, {\"type\": \"content\"}, {\"type\": \"bottom_bar\"}]},\n  \"classification\": {\"screen_type\": \"whatsapp_chat_list\", \"app_name\": \"WhatsApp\", \"screen_name\": \"whatsapp_chat_list\", \"confidence\": 0.91, \"reason\": \"matched text indicators: WhatsApp, Chats\"},\n  \"memory\": {\"screen_recorded\": true, \"history_count\": 1}\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"foreground_app\": \"com.whatsapp\"\n}" }
+          }
         }
       ]
     },
@@ -715,97 +478,43 @@
           "name": "GET /api/phase2/screen/current",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/screen/current?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "screen", "current"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"screen\": {\"screen_type\": \"whatsapp_chat_list\", \"app_name\": \"WhatsApp\", \"text_content\": \"WhatsApp Chats...\", \"elements_count\": 12, \"detected_at\": \"...\"}\n}"
-            }
-          ]
+            "url": { "raw": "{{base_url}}/api/phase2/screen/current?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "current"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
+          }
         },
         {
           "name": "GET /api/phase2/screen/layout",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/screen/layout?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "screen", "layout"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"layout_type\": \"list\",\n  \"sections\": [{\"type\": \"top_bar\", \"y_start\": 0, \"y_end\": 80, \"confidence\": 0.9}]\n}"
-            }
-          ]
+            "url": { "raw": "{{base_url}}/api/phase2/screen/layout?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "layout"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
+          }
         },
         {
           "name": "GET /api/phase2/screen/elements",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/screen/elements?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "screen", "elements"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
+            "url": { "raw": "{{base_url}}/api/phase2/screen/elements?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "elements"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
           }
         },
         {
           "name": "GET /api/phase2/screen/history",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/screen/history?device_id={{device_id}}&limit=10",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "screen", "history"],
-              "query": [
-                { "key": "device_id", "value": "{{device_id}}" },
-                { "key": "limit", "value": "10" }
-              ]
-            }
+            "url": { "raw": "{{base_url}}/api/phase2/screen/history?device_id={{device_id}}&limit=10", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "history"], "query": [{ "key": "device_id", "value": "{{device_id}}" }, { "key": "limit", "value": "10" }] }
           }
         },
         {
           "name": "GET /api/phase2/screen/navigation",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/screen/navigation?device_id={{device_id}}&limit=10",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "screen", "navigation"],
-              "query": [
-                { "key": "device_id", "value": "{{device_id}}" },
-                { "key": "limit", "value": "10" }
-              ]
-            }
+            "url": { "raw": "{{base_url}}/api/phase2/screen/navigation?device_id={{device_id}}&limit=10", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "navigation"], "query": [{ "key": "device_id", "value": "{{device_id}}" }, { "key": "limit", "value": "10" }] }
           }
         },
         {
           "name": "GET /api/phase2/screen/classification",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/screen/classification?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "screen", "classification"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"current_screen_type\": \"whatsapp_chat_list\",\n  \"current_app\": \"WhatsApp\",\n  \"current_screen_name\": \"whatsapp_chat_list\",\n  \"confidence\": 0.91,\n  \"recent_screen_types\": [\"whatsapp_chat_list\"]\n}"
-            }
-          ]
+            "url": { "raw": "{{base_url}}/api/phase2/screen/classification?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "screen", "classification"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
+          }
         }
       ]
     },
@@ -816,61 +525,29 @@
           "name": "GET /api/phase2/memory/current",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/memory/current?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "memory", "current"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
+            "url": { "raw": "{{base_url}}/api/phase2/memory/current?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "memory", "current"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
           }
         },
         {
           "name": "GET /api/phase2/memory/history",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/memory/history?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "memory", "history"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
+            "url": { "raw": "{{base_url}}/api/phase2/memory/history?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "memory", "history"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
           }
         },
         {
           "name": "DELETE /api/phase2/memory/clear",
           "request": {
             "method": "DELETE",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/memory/clear?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "memory", "clear"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"status\": \"cleared\",\n  \"device_id\": \"7f0deaf6\"\n}"
-            }
-          ]
+            "url": { "raw": "{{base_url}}/api/phase2/memory/clear?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "memory", "clear"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
+          }
         },
         {
           "name": "GET /api/phase2/memory/context",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/memory/context?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "memory", "context"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"context\": {\n    \"device_id\": \"7f0deaf6\",\n    \"current_screen\": {\"screen_type\": \"whatsapp_chat_list\"},\n    \"recent_apps\": [\"WhatsApp\"],\n    \"recent_screen_types\": [\"whatsapp_chat_list\"],\n    \"screen_history_count\": 5,\n    \"navigation_count\": 2\n  }\n}"
-            }
-          ]
+            "url": { "raw": "{{base_url}}/api/phase2/memory/context?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "memory", "context"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
+          }
         }
       ]
     },
@@ -881,12 +558,7 @@
           "name": "GET /api/phase2/navigation/current",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/navigation/current?device_id={{device_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "navigation", "current"],
-              "query": [{ "key": "device_id", "value": "{{device_id}}" }]
-            }
+            "url": { "raw": "{{base_url}}/api/phase2/navigation/current?device_id={{device_id}}", "host": ["{{base_url}}"], "path": ["api", "phase2", "navigation", "current"], "query": [{ "key": "device_id", "value": "{{device_id}}" }] }
           }
         },
         {
@@ -895,17 +567,8 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/navigation/plan", "host": ["{{base_url}}"], "path": ["api", "phase2", "navigation", "plan"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"target_screen\": \"whatsapp_chat\",\n  \"target_app\": \"whatsapp\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"path\": {\n    \"target_screen\": \"whatsapp_chat\",\n    \"target_app\": \"whatsapp\",\n    \"instructions\": [\n      {\"step_type\": \"open_app\", \"target\": \"whatsapp\", \"description\": \"Open whatsapp\", \"duration\": 0.5, \"confidence\": 1.0},\n      {\"step_type\": \"wait\", \"target\": \"\", \"description\": \"Wait for app to load\", \"duration\": 3.0, \"confidence\": 1.0},\n      {\"step_type\": \"tap\", \"target\": \"search\", \"description\": \"Tap search\", \"duration\": 0.5, \"confidence\": 1.0},\n      {\"step_type\": \"type_text\", \"target\": \"\", \"text\": \"\", \"description\": \"Type \", \"duration\": 0.5, \"confidence\": 1.0}\n    ],\n    \"total_steps\": 4,\n    \"confidence\": 0.7\n  }\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"target_screen\": \"whatsapp_chat\",\n  \"target_app\": \"whatsapp\"\n}" }
+          }
         },
         {
           "name": "POST /api/phase2/navigation/execute",
@@ -913,17 +576,8 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/navigation/execute", "host": ["{{base_url}}"], "path": ["api", "phase2", "navigation", "execute"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"target_screen\": \"whatsapp_chat\",\n  \"target_app\": \"whatsapp\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"target\": \"whatsapp_chat\",\n  \"executed\": [\n    {\"status\": \"success\", \"type\": \"launch_app\", \"app\": \"whatsapp\"},\n    {\"status\": \"success\", \"type\": \"waited\", \"duration\": 3.0},\n    {\"status\": \"success\", \"type\": \"tapped\", \"target\": \"search\"},\n    {\"status\": \"success\", \"type\": \"text_typed\", \"text\": \"\"}\n  ],\n  \"all_success\": true\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"target_screen\": \"whatsapp_chat\",\n  \"target_app\": \"whatsapp\"\n}" }
+          }
         }
       ]
     },
@@ -936,17 +590,8 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/messages/send", "host": ["{{base_url}}"], "path": ["api", "phase2", "messages", "send"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"app\": \"whatsapp\",\n  \"recipient\": \"Guru\",\n  \"message\": \"Good Morning\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"app\": \"whatsapp\",\n  \"recipient\": \"Guru\",\n  \"message\": \"Good Morning\",\n  \"plan\": {\"steps\": 8, \"confidence\": 0.6},\n  \"executed\": [...],\n  \"instruction\": \"Opening WhatsApp, finding Guru chat, typing and sending message\"\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"app\": \"whatsapp\",\n  \"recipient\": \"Guru\",\n  \"message\": \"Good Morning\"\n}" }
+          }
         },
         {
           "name": "POST /api/phase2/messages/reply",
@@ -954,38 +599,15 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/messages/reply", "host": ["{{base_url}}"], "path": ["api", "phase2", "messages", "reply"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"message\": \"Good Morning!\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"message\": \"Good Morning!\",\n  \"plan\": {\"steps\": 3, \"confidence\": 0.8},\n  \"executed\": [{\"status\": \"success\", \"type\": \"text_typed\", \"text\": \"Good Morning!\"}, {\"status\": \"success\", \"type\": \"tapped\", \"target\": \"Send\"}]\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"message\": \"Good Morning!\"\n}" }
+          }
         },
         {
           "name": "GET /api/phase2/messages/history",
           "request": {
             "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/api/phase2/messages/history?device_id={{device_id}}&limit=10",
-              "host": ["{{base_url}}"],
-              "path": ["api", "phase2", "messages", "history"],
-              "query": [
-                { "key": "device_id", "value": "{{device_id}}" },
-                { "key": "limit", "value": "10" }
-              ]
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"device_id\": \"7f0deaf6\",\n  \"message_screens\": [...],\n  \"total\": 2\n}"
-            }
-          ]
+            "url": { "raw": "{{base_url}}/api/phase2/messages/history?device_id={{device_id}}&limit=10", "host": ["{{base_url}}"], "path": ["api", "phase2", "messages", "history"], "query": [{ "key": "device_id", "value": "{{device_id}}" }, { "key": "limit", "value": "10" }] }
+          }
         }
       ]
     },
@@ -998,17 +620,8 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/verify/screen", "host": ["{{base_url}}"], "path": ["api", "phase2", "verify", "screen"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"expected_screen\": \"whatsapp_chat\",\n  \"expected_app\": \"whatsapp\",\n  \"expected_text\": \"Guru\",\n  \"verify_text_absent\": \"\",\n  \"timeout_seconds\": 10\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"verification\": {\n    \"type\": \"screen_match\",\n    \"passed\": true,\n    \"message\": \"Screen is whatsapp_chat\",\n    \"confidence\": 0.85,\n    \"evidence\": {\"expected\": \"whatsapp_chat\", \"detected\": \"whatsapp_chat\"},\n    \"duration_ms\": 5000.0,\n    \"timestamp\": \"...\"\n  }\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"expected_screen\": \"whatsapp_chat\",\n  \"expected_app\": \"whatsapp\",\n  \"expected_text\": \"Guru\",\n  \"timeout_seconds\": 10\n}" }
+          }
         },
         {
           "name": "POST /api/phase2/verify/navigation",
@@ -1016,17 +629,8 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/verify/navigation", "host": ["{{base_url}}"], "path": ["api", "phase2", "verify", "navigation"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"expected_screen\": \"whatsapp_chat\",\n  \"expected_app\": \"whatsapp\",\n  \"timeout_seconds\": 10\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"verification\": {\"type\": \"screen_match\", \"passed\": true, ...}\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"expected_screen\": \"whatsapp_chat\",\n  \"expected_app\": \"whatsapp\",\n  \"timeout_seconds\": 10\n}" }
+          }
         },
         {
           "name": "POST /api/phase2/verify/message",
@@ -1034,121 +638,336 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/verify/message", "host": ["{{base_url}}"], "path": ["api", "phase2", "verify", "message"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"expected_text\": \"Good Morning\",\n  \"timeout_seconds\": 10\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"verification\": {\"type\": \"text_present\", \"passed\": true, \"message\": \"Text 'Good Morning' found on screen\", \"confidence\": 0.85}\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"expected_text\": \"Good Morning\",\n  \"timeout_seconds\": 10\n}" }
+          }
         },
         {
-          "name": "POST /api/phase2/verify/pipeline — Full Pipeline",
+          "name": "POST /api/phase2/verify/pipeline",
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/verify/pipeline", "host": ["{{base_url}}"], "path": ["api", "phase2", "verify", "pipeline"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"expected_screen\": \"whatsapp_chat\",\n  \"expected_app\": \"whatsapp\",\n  \"expected_text\": \"Guru\",\n  \"timeout_seconds\": 10\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"all_passed\": true,\n  \"results\": [\n    {\"type\": \"screen_match\", \"passed\": true, \"message\": \"Screen is whatsapp_chat\"},\n    {\"type\": \"text_present\", \"passed\": true, \"message\": \"Text 'Guru' found on screen\"}\n  ]\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{device_id}}\",\n  \"expected_screen\": \"whatsapp_chat\",\n  \"expected_app\": \"whatsapp\",\n  \"expected_text\": \"Guru\",\n  \"timeout_seconds\": 10\n}" }
+          }
         }
       ]
     },
     {
-      "name": "📚 Phase 2 — App Knowledge",
+      "name": "📚 Phase 2 — App Knowledge & Acceptance Tests",
       "item": [
         {
-          "name": "GET /api/phase2/app-knowledge — All Apps",
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/api/phase2/app-knowledge", "host": ["{{base_url}}"], "path": ["api", "phase2", "app-knowledge"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"apps\": [\"instagram\", \"whatsapp\", \"chrome\", \"youtube\", \"telegram\", \"discord\", \"messenger\", \"gmail\", \"maps\", \"twitter\", \"linkedin\", \"settings\", \"phone\"],\n  \"total\": 13,\n  \"details\": {...}\n}"
-            }
-          ]
+          "name": "GET /api/phase2/app-knowledge",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase2/app-knowledge", "host": ["{{base_url}}"], "path": ["api", "phase2", "app-knowledge"] } }
         },
         {
           "name": "GET /api/phase2/app-knowledge/{app_name}",
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/api/phase2/app-knowledge/whatsapp", "host": ["{{base_url}}"], "path": ["api", "phase2", "app-knowledge", "whatsapp"] }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"app\": \"whatsapp\",\n  \"package\": \"com.whatsapp\",\n  \"screens\": {\"chat_list\": {\"name\": \"chat_list\", \"buttons\": [{\"text\": \"New Chat\"}, {\"text\": \"Search\"}], \"elements\": []}, \"chat\": {\"name\": \"chat\", \"buttons\": [{\"text\": \"Send\"}], \"elements\": [{\"type\": \"input\", \"id\": \"message_input\"}]}},\n  \"workflows\": [{\"name\": \"open_chat\", ...}],\n  \"navigation_paths\": [{\"from\": \"chat_list\", \"to\": \"chat\"}, {\"from\": \"chat_list\", \"to\": \"search\"}]\n}"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "🧪 Phase 2 — Acceptance Test Endpoints",
-      "item": [
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase2/app-knowledge/whatsapp", "host": ["{{base_url}}"], "path": ["api", "phase2", "app-knowledge", "whatsapp"] } }
+        },
         {
           "name": "POST /api/phase2/open-chat",
           "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/open-chat", "host": ["{{base_url}}"], "path": ["api", "phase2", "open-chat"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"command\": \"Open WhatsApp and open Guru chat\",\n  \"device_id\": \"{{device_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"sess_01\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"intent\": \"send_message\",\n  \"target\": \"guru\",\n  \"app\": \"whatsapp\",\n  \"steps\": [{\"type\": \"launch_app\", \"app\": \"whatsapp\"}, {\"type\": \"open_chat\"}],\n  \"message\": \"Opening Guru chat in WhatsApp\"\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"command\": \"Open WhatsApp and open Guru chat\",\n  \"device_id\": \"{{device_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"{{session_id}}\"\n}" }
+          }
         },
         {
           "name": "POST /api/phase2/reply-message",
           "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/api/phase2/reply-message", "host": ["{{base_url}}"], "path": ["api", "phase2", "reply-message"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"command\": \"Reply Good Morning\",\n  \"device_id\": \"{{device_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"sess_01\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"intent\": \"send_message\",\n  \"message\": \"Good Morning\",\n  \"steps\": [{\"type\": \"reply\"}],\n  \"verification\": {\"type\": \"verify_sent\", \"status\": \"pending\"}\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"command\": \"Reply Good Morning\",\n  \"device_id\": \"{{device_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"{{session_id}}\"\n}" }
+          }
         },
         {
           "name": "GET /api/phase2/navigate-screens",
-          "request": {
-            "method": "GET",
-            "url": { "raw": "{{base_url}}/api/phase2/navigate-screens", "host": ["{{base_url}}"], "path": ["api", "phase2", "navigate-screens"] }
-          }
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase2/navigate-screens", "host": ["{{base_url}}"], "path": ["api", "phase2", "navigate-screens"] } }
         },
         {
           "name": "GET /api/phase2/verify-screen",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase2/verify-screen", "host": ["{{base_url}}"], "path": ["api", "phase2", "verify-screen"] } }
+        }
+      ]
+    },
+    {
+      "name": "🧠 Phase 3 — Knowledge Intelligence",
+      "item": [
+        {
+          "name": "POST /api/phase3/index",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/index", "host": ["{{base_url}}"], "path": ["api", "phase3", "index"] },
+            "body": { "mode": "raw", "raw": "{\n  \"source_type\": null,\n  \"file_paths\": null\n}" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/reindex",
+          "request": { "method": "POST", "url": { "raw": "{{base_url}}/api/phase3/reindex", "host": ["{{base_url}}"], "path": ["api", "phase3", "reindex"] } }
+        },
+        {
+          "name": "POST /api/phase3/search",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/search", "host": ["{{base_url}}"], "path": ["api", "phase3", "search"] },
+            "body": { "mode": "raw", "raw": "{\n  \"query\": \"machine learning\",\n  \"search_type\": \"hybrid\",\n  \"top_k\": 20\n}" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/semantic-search",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/semantic-search", "host": ["{{base_url}}"], "path": ["api", "phase3", "semantic-search"] },
+            "body": { "mode": "raw", "raw": "\"machine learning\"" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/hybrid-search",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/hybrid-search", "host": ["{{base_url}}"], "path": ["api", "phase3", "hybrid-search"] },
+            "body": { "mode": "raw", "raw": "\"machine learning\"" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/retrieve",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/retrieve", "host": ["{{base_url}}"], "path": ["api", "phase3", "retrieve"] },
+            "body": { "mode": "raw", "raw": "{\n  \"query\": \"machine learning\",\n  \"top_k\": 10,\n  \"search_type\": \"hybrid\"\n}" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/ask — Ask Question",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/ask", "host": ["{{base_url}}"], "path": ["api", "phase3", "ask"] },
+            "body": { "mode": "raw", "raw": "{\n  \"query\": \"What is machine learning?\",\n  \"top_k\": 10,\n  \"max_context\": 4000\n}" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/chat — Chat with Knowledge",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/chat", "host": ["{{base_url}}"], "path": ["api", "phase3", "chat"] },
+            "body": { "mode": "raw", "raw": "{\n  \"query\": \"What is machine learning?\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"top_k\": 10\n}" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/rag — Full RAG Pipeline",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/rag", "host": ["{{base_url}}"], "path": ["api", "phase3", "rag"] },
+            "body": { "mode": "raw", "raw": "\"What is machine learning?\"" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/knowledge-chat",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/knowledge-chat", "host": ["{{base_url}}"], "path": ["api", "phase3", "knowledge-chat"] },
+            "body": { "mode": "raw", "raw": "{\n  \"message\": \"What is APA-OS?\",\n  \"conversation_id\": \"{{conversation_id}}\"\n}" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/knowledge-command",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/knowledge-command", "host": ["{{base_url}}"], "path": ["api", "phase3", "knowledge-command"] },
+            "body": { "mode": "raw", "raw": "\"find python notes\"" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/upload",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "multipart/form-data" }],
+            "url": { "raw": "{{base_url}}/api/phase3/upload", "host": ["{{base_url}}"], "path": ["api", "phase3", "upload"] },
+            "body": { "mode": "formdata", "formdata": [
+              { "key": "file", "type": "file", "src": "" }
+            ]}
+          }
+        },
+        {
+          "name": "POST /api/phase3/sources/configure",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/sources/configure", "host": ["{{base_url}}"], "path": ["api", "phase3", "sources", "configure"] },
+            "body": { "mode": "raw", "raw": "{\n  \"source_type\": \"local\",\n  \"config\": {\n    \"paths\": [\"/home/user/documents\"]\n  }\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "📄 Phase 3 — Documents & Sources",
+      "item": [
+        {
+          "name": "GET /api/phase3/documents",
           "request": {
             "method": "GET",
-            "url": { "raw": "{{base_url}}/api/phase2/verify-screen", "host": ["{{base_url}}"], "path": ["api", "phase2", "verify-screen"] }
+            "url": { "raw": "{{base_url}}/api/phase3/documents?limit=50&offset=0", "host": ["{{base_url}}"], "path": ["api", "phase3", "documents"], "query": [{ "key": "limit", "value": "50" }, { "key": "offset", "value": "0" }, { "key": "source", "value": "", "disabled": true }] }
           }
+        },
+        {
+          "name": "GET /api/phase3/document/{doc_id}",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/document/{{doc_id}}", "host": ["{{base_url}}"], "path": ["api", "phase3", "document", "{{doc_id}}"] } }
+        },
+        {
+          "name": "GET /api/phase3/sources",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/sources", "host": ["{{base_url}}"], "path": ["api", "phase3", "sources"] } }
+        }
+      ]
+    },
+    {
+      "name": "💾 Phase 3 — Memory",
+      "item": [
+        {
+          "name": "GET /api/phase3/memory/current",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/memory/current?session_id={{session_id}}", "host": ["{{base_url}}"], "path": ["api", "phase3", "memory", "current"], "query": [{ "key": "session_id", "value": "{{session_id}}" }] } }
+        },
+        {
+          "name": "GET /api/phase3/memory/history",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/memory/history?user_id={{user_id}}&limit=50", "host": ["{{base_url}}"], "path": ["api", "phase3", "memory", "history"], "query": [{ "key": "user_id", "value": "{{user_id}}" }, { "key": "limit", "value": "50" }, { "key": "memory_type", "value": "", "disabled": true }] } }
+        },
+        {
+          "name": "POST /api/phase3/memory/store",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/memory/store", "host": ["{{base_url}}"], "path": ["api", "phase3", "memory", "store"] },
+            "body": { "mode": "raw", "raw": "{\n  \"type\": \"knowledge\",\n  \"content\": \"Learned about FastAPI\",\n  \"user_id\": \"{{user_id}}\",\n  \"session_id\": \"{{session_id}}\",\n  \"importance\": 0.8\n}" }
+          }
+        },
+        {
+          "name": "DELETE /api/phase3/memory/clear",
+          "request": { "method": "DELETE", "url": { "raw": "{{base_url}}/api/phase3/memory/clear?user_id={{user_id}}", "host": ["{{base_url}}"], "path": ["api", "phase3", "memory", "clear"], "query": [{ "key": "user_id", "value": "{{user_id}}" }] } }
+        }
+      ]
+    },
+    {
+      "name": "🔗 Phase 3 — Knowledge Graph",
+      "item": [
+        {
+          "name": "GET /api/phase3/graph/entities",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/graph/entities", "host": ["{{base_url}}"], "path": ["api", "phase3", "graph", "entities"] } }
+        },
+        {
+          "name": "GET /api/phase3/graph/entity/{entity_id}",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/graph/entity/{{entity_id}}", "host": ["{{base_url}}"], "path": ["api", "phase3", "graph", "entity", "{{entity_id}}"] } }
+        },
+        {
+          "name": "GET /api/phase3/graph/relationships",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/graph/relationships", "host": ["{{base_url}}"], "path": ["api", "phase3", "graph", "relationships"] } }
+        },
+        {
+          "name": "POST /api/phase3/graph/entity — Create Entity",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/graph/entity", "host": ["{{base_url}}"], "path": ["api", "phase3", "graph", "entity"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Python\",\n  \"entity_type\": \"concept\",\n  \"properties\": {\"category\": \"programming\"}\n}" }
+          }
+        },
+        {
+          "name": "POST /api/phase3/graph/relationship — Create Relationship",
+          "request": {
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/api/phase3/graph/relationship", "host": ["{{base_url}}"], "path": ["api", "phase3", "graph", "relationship"] },
+            "body": { "mode": "raw", "raw": "{\n  \"source_id\": \"ent_001\",\n  \"target_id\": \"ent_002\",\n  \"relationship_type\": \"related_to\"\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "📁 Phase 3 — File Explorer",
+      "item": [
+        {
+          "name": "GET /api/phase3/files",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/files?path=", "host": ["{{base_url}}"], "path": ["api", "phase3", "files"], "query": [{ "key": "path", "value": "" }] } }
+        },
+        {
+          "name": "GET /api/phase3/files/recent",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/files/recent?limit=20", "host": ["{{base_url}}"], "path": ["api", "phase3", "files", "recent"], "query": [{ "key": "limit", "value": "20" }] } }
+        },
+        {
+          "name": "GET /api/phase3/files/favorites",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/files/favorites", "host": ["{{base_url}}"], "path": ["api", "phase3", "files", "favorites"] } }
+        },
+        {
+          "name": "GET /api/phase3/files/search",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/files/search?query=test", "host": ["{{base_url}}"], "path": ["api", "phase3", "files", "search"], "query": [{ "key": "query", "value": "test" }, { "key": "path", "value": "", "disabled": true }] } }
+        },
+        {
+          "name": "GET /api/phase3/files/{file_id}",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/files/{{doc_id}}", "host": ["{{base_url}}"], "path": ["api", "phase3", "files", "{{doc_id}}"] } }
+        }
+      ]
+    },
+    {
+      "name": "📊 Phase 3 — Analytics",
+      "item": [
+        {
+          "name": "GET /api/phase3/analytics/knowledge",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/analytics/knowledge", "host": ["{{base_url}}"], "path": ["api", "phase3", "analytics", "knowledge"] } }
+        },
+        {
+          "name": "GET /api/phase3/analytics/search",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/analytics/search", "host": ["{{base_url}}"], "path": ["api", "phase3", "analytics", "search"] } }
+        },
+        {
+          "name": "GET /api/phase3/analytics/memory",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/analytics/memory", "host": ["{{base_url}}"], "path": ["api", "phase3", "analytics", "memory"] } }
+        },
+        {
+          "name": "GET /api/phase3/analytics/sources",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/analytics/sources", "host": ["{{base_url}}"], "path": ["api", "phase3", "analytics", "sources"] } }
+        }
+      ]
+    },
+    {
+      "name": "🤖 Phase 3 — Agents",
+      "item": [
+        {
+          "name": "GET /api/phase3/agents",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/agents", "host": ["{{base_url}}"], "path": ["api", "phase3", "agents"] } }
+        },
+        {
+          "name": "GET /api/phase3/agents/{agent_id}",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/agents/{{agent_id}}", "host": ["{{base_url}}"], "path": ["api", "phase3", "agents", "{{agent_id}}"] } }
+        },
+        {
+          "name": "GET /api/phase3/agents/{agent_id}/health",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/agents/{{agent_id}}/health", "host": ["{{base_url}}"], "path": ["api", "phase3", "agents", "{{agent_id}}", "health"] } }
+        },
+        {
+          "name": "GET /api/phase3/agents/{agent_id}/metrics",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/agents/{{agent_id}}/metrics", "host": ["{{base_url}}"], "path": ["api", "phase3", "agents", "{{agent_id}}", "metrics"] } }
+        },
+        {
+          "name": "POST /api/phase3/agents/{agent_id}/pause",
+          "request": { "method": "POST", "url": { "raw": "{{base_url}}/api/phase3/agents/{{agent_id}}/pause", "host": ["{{base_url}}"], "path": ["api", "phase3", "agents", "{{agent_id}}", "pause"] } }
+        },
+        {
+          "name": "POST /api/phase3/agents/{agent_id}/resume",
+          "request": { "method": "POST", "url": { "raw": "{{base_url}}/api/phase3/agents/{{agent_id}}/resume", "host": ["{{base_url}}"], "path": ["api", "phase3", "agents", "{{agent_id}}", "resume"] } }
+        }
+      ]
+    },
+    {
+      "name": "💬 Phase 3 — Conversations & Context",
+      "item": [
+        {
+          "name": "GET /api/phase3/conversations",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/conversations?user_id={{user_id}}", "host": ["{{base_url}}"], "path": ["api", "phase3", "conversations"], "query": [{ "key": "user_id", "value": "{{user_id}}" }] } }
+        },
+        {
+          "name": "GET /api/phase3/conversations/{conversation_id}",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/conversations/{{conversation_id}}?limit=50", "host": ["{{base_url}}"], "path": ["api", "phase3", "conversations", "{{conversation_id}}"], "query": [{ "key": "limit", "value": "50" }] } }
+        },
+        {
+          "name": "POST /api/phase3/conversations/{conversation_id}/clear",
+          "request": { "method": "POST", "url": { "raw": "{{base_url}}/api/phase3/conversations/{{conversation_id}}/clear", "host": ["{{base_url}}"], "path": ["api", "phase3", "conversations", "{{conversation_id}}", "clear"] } }
+        },
+        {
+          "name": "GET /api/phase3/context/current",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/api/phase3/context/current", "host": ["{{base_url}}"], "path": ["api", "phase3", "context", "current"] } }
         }
       ]
     },
@@ -1158,48 +977,26 @@
         {
           "name": "POST /life_direction/command",
           "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/life_direction/command", "host": ["{{base_url}}"], "path": ["life_direction", "command"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"command\": \"Open Instagram\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"success\": true,\n  \"status\": \"completed\",\n  \"target\": \"instagram\",\n  \"device\": \"7f0deaf6\",\n  \"workflow_id\": \"wf_abc\"\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"command\": \"Open Instagram\"\n}" }
+          }
         },
         {
           "name": "POST /life_direction/voice",
           "request": {
-            "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": { "raw": "{{base_url}}/life_direction/voice", "host": ["{{base_url}}"], "path": ["life_direction", "voice"] },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"audio_base64\": null,\n  \"mock_voice_text\": \"Open Instagram\"\n}"
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"voice_pipeline\": {\"input\": \"Audio Stream Processed\", \"transcription\": \"Open Instagram\"},\n  \"initial_reply\": \"Opening Instagram.\",\n  \"final_reply\": \"Instagram is ready.\",\n  \"execution_details\": {\"success\": true, \"status\": \"completed\", \"target\": \"instagram\", \"device\": \"7f0deaf6\", \"workflow_id\": \"wf_abc\"}\n}"
-            }
-          ]
+            "body": { "mode": "raw", "raw": "{\n  \"mock_voice_text\": \"Open Instagram\"\n}" }
+          }
         },
         {
           "name": "POST /life_direction/future_self",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": {
               "raw": "{{base_url}}/life_direction/future_self?user_id={{user_id}}&title=Become%20a%20better%20developer&description=Learn%20new%20skills&categories=career&target_date=2027-01-01",
-              "host": ["{{base_url}}"],
-              "path": ["life_direction", "future_self"],
+              "host": ["{{base_url}}"], "path": ["life_direction", "future_self"],
               "query": [
                 { "key": "user_id", "value": "{{user_id}}" },
                 { "key": "title", "value": "Become a better developer" },
@@ -1208,121 +1005,55 @@
                 { "key": "target_date", "value": "2027-01-01" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"id\": \"fs_001\",\n  \"user_id\": \"user_01\",\n  \"title\": \"Become a better developer\",\n  \"description\": \"Learn new skills\",\n  \"categories\": [\"career\"],\n  \"target_date\": \"2027-01-01T00:00:00\",\n  \"status\": \"active\",\n  \"progress\": 0.0\n}"
-            }
-          ]
+          }
         },
         {
           "name": "GET /life_direction/future_self",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/life_direction/future_self?user_id={{user_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["life_direction", "future_self"],
-              "query": [{ "key": "user_id", "value": "{{user_id}}" }]
-            }
-          }
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/life_direction/future_self?user_id={{user_id}}", "host": ["{{base_url}}"], "path": ["life_direction", "future_self"], "query": [{ "key": "user_id", "value": "{{user_id}}" }] } }
         },
         {
           "name": "POST /life_direction/goals",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": {
-              "raw": "{{base_url}}/life_direction/goals?future_self_id=fs_001&user_id={{user_id}}&title=Learn%20Python&description=Master%20Python&priority=1",
-              "host": ["{{base_url}}"],
-              "path": ["life_direction", "goals"],
+              "raw": "{{base_url}}/life_direction/goals?future_self_id=fs_001&user_id={{user_id}}&title=Learn%20Python&priority=1",
+              "host": ["{{base_url}}"], "path": ["life_direction", "goals"],
               "query": [
                 { "key": "future_self_id", "value": "fs_001" },
                 { "key": "user_id", "value": "{{user_id}}" },
                 { "key": "title", "value": "Learn Python" },
-                { "key": "description", "value": "Master Python" },
+                { "key": "description", "value": "Master Python", "disabled": true },
                 { "key": "priority", "value": "1" }
-              ]
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"id\": \"goal_001\",\n  \"future_self_id\": \"fs_001\",\n  \"user_id\": \"user_01\",\n  \"title\": \"Learn Python\",\n  \"description\": \"Master Python\",\n  \"priority\": 1,\n  \"target_date\": null,\n  \"status\": \"active\",\n  \"progress\": 0.0\n}"
-            }
-          ]
-        },
-        {
-          "name": "GET /life_direction/goals",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/life_direction/goals?user_id={{user_id}}&future_self_id=fs_001",
-              "host": ["{{base_url}}"],
-              "path": ["life_direction", "goals"],
-              "query": [
-                { "key": "user_id", "value": "{{user_id}}" },
-                { "key": "future_self_id", "value": "fs_001" }
               ]
             }
           }
         },
         {
+          "name": "GET /life_direction/goals",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/life_direction/goals?user_id={{user_id}}", "host": ["{{base_url}}"], "path": ["life_direction", "goals"], "query": [{ "key": "user_id", "value": "{{user_id}}" }, { "key": "future_self_id", "value": "", "disabled": true }] } }
+        },
+        {
           "name": "POST /life_direction/reality_check",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "url": {
               "raw": "{{base_url}}/life_direction/reality_check?user_id={{user_id}}&summary=Good%20progress%20today&date=2026-06-20",
-              "host": ["{{base_url}}"],
-              "path": ["life_direction", "reality_check"],
+              "host": ["{{base_url}}"], "path": ["life_direction", "reality_check"],
               "query": [
                 { "key": "user_id", "value": "{{user_id}}" },
                 { "key": "summary", "value": "Good progress today" },
                 { "key": "date", "value": "2026-06-20" }
               ]
             }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"id\": \"rc_001\",\n  \"user_id\": \"user_01\",\n  \"date\": \"2026-06-20T00:00:00\",\n  \"goal_alignment_score\": null,\n  \"summary\": \"Good progress today\",\n  \"recommendations\": {}\n}"
-            }
-          ]
-        },
-        {
-          "name": "GET /life_direction/reality_check",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/life_direction/reality_check?user_id={{user_id}}&date=2026-06-20",
-              "host": ["{{base_url}}"],
-              "path": ["life_direction", "reality_check"],
-              "query": [
-                { "key": "user_id", "value": "{{user_id}}" },
-                { "key": "date", "value": "2026-06-20" }
-              ]
-            }
           }
         },
         {
+          "name": "GET /life_direction/reality_check",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/life_direction/reality_check?user_id={{user_id}}", "host": ["{{base_url}}"], "path": ["life_direction", "reality_check"], "query": [{ "key": "user_id", "value": "{{user_id}}" }, { "key": "date", "value": "", "disabled": true }] } }
+        },
+        {
           "name": "GET /life_direction/recommendation",
-          "request": {
-            "method": "GET",
-            "url": {
-              "raw": "{{base_url}}/life_direction/recommendation?user_id={{user_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["life_direction", "recommendation"],
-              "query": [{ "key": "user_id", "value": "{{user_id}}" }]
-            }
-          },
-          "response": [
-            {
-              "name": "Success",
-              "body": "{\n  \"action\": \"work_on_goal\",\n  \"goal_id\": \"goal_001\",\n  \"title\": \"Learn Python\"\n}"
-            }
-          ]
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/life_direction/recommendation?user_id={{user_id}}", "host": ["{{base_url}}"], "path": ["life_direction", "recommendation"], "query": [{ "key": "user_id", "value": "{{user_id}}" }] } }
         }
       ]
     },
@@ -1330,58 +1061,81 @@
       "name": "🔌 WebSocket Endpoints",
       "item": [
         {
-          "name": "WS /ws/events/{client_id} — Event Stream",
+          "name": "WS /ws/events/{client_id}",
           "request": {
             "method": "GET",
-            "url": { "raw": "ws://localhost:8000/ws/events/{{client_id}}", "host": ["ws://localhost:8000"], "path": ["ws", "events", "{{client_id}}"] }
-          },
-          "description": "Establishes persistent connection. Server pushes all workflow events as JSON text messages in real-time."
+            "url": { "raw": "{{ws_url}}/ws/events/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "events", "{{client_id}}"] }
+          }
         },
         {
-          "name": "WS /ws/screen/{client_id} — Screen Capture",
+          "name": "WS /ws/screen/{client_id}",
           "request": {
             "method": "GET",
-            "url": { "raw": "ws://localhost:8000/ws/screen/{{client_id}}", "host": ["ws://localhost:8000"], "path": ["ws", "screen", "{{client_id}}"] }
-          },
-          "description": "Send 'capture' to trigger screenshot. Server responds with screen_captured event or error."
-        },
-        {
-          "name": "WS /ws/ocr/{client_id} — OCR",
-          "request": {
-            "method": "GET",
-            "url": { "raw": "ws://localhost:8000/ws/ocr/{{client_id}}", "host": ["ws://localhost:8000"], "path": ["ws", "ocr", "{{client_id}}"] }
-          },
-          "description": "Send 'ocr' to trigger screen capture + OCR. Server responds with extracted text."
-        },
-        {
-          "name": "WS /ws/vision/{client_id} — Full Vision Analysis",
-          "request": {
-            "method": "GET",
-            "url": { "raw": "ws://localhost:8000/ws/vision/{{client_id}}", "host": ["ws://localhost:8000"], "path": ["ws", "vision", "{{client_id}}"] }
-          },
-          "description": "Send 'analyze' to trigger full pipeline: capture → OCR → UI detection → classification."
+            "url": { "raw": "{{ws_url}}/ws/screen/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "screen", "{{client_id}}"] }
+          }
         },
         {
           "name": "WS /ws/navigation/{client_id}",
           "request": {
             "method": "GET",
-            "url": { "raw": "ws://localhost:8000/ws/navigation/{{client_id}}", "host": ["ws://localhost:8000"], "path": ["ws", "navigation", "{{client_id}}"] }
+            "url": { "raw": "{{ws_url}}/ws/navigation/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "navigation", "{{client_id}}"] }
+          }
+        },
+        {
+          "name": "WS /ws/ocr/{client_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{ws_url}}/ws/ocr/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "ocr", "{{client_id}}"] }
+          }
+        },
+        {
+          "name": "WS /ws/vision/{client_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{ws_url}}/ws/vision/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "vision", "{{client_id}}"] }
           }
         },
         {
           "name": "WS /ws/messages/{client_id}",
           "request": {
             "method": "GET",
-            "url": { "raw": "ws://localhost:8000/ws/messages/{{client_id}}", "host": ["ws://localhost:8000"], "path": ["ws", "messages", "{{client_id}}"] }
+            "url": { "raw": "{{ws_url}}/ws/messages/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "messages", "{{client_id}}"] }
           }
         },
         {
           "name": "WS /ws/memory/{client_id}",
           "request": {
             "method": "GET",
-            "url": { "raw": "ws://localhost:8000/ws/memory/{{client_id}}", "host": ["ws://localhost:8000"], "path": ["ws", "memory", "{{client_id}}"] }
-          },
-          "description": "Send 'status' to get memory status. Server responds with device list."
+            "url": { "raw": "{{ws_url}}/ws/memory/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "memory", "{{client_id}}"] }
+          }
+        },
+        {
+          "name": "WS /ws/knowledge/{client_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{ws_url}}/ws/knowledge/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "knowledge", "{{client_id}}"] }
+          }
+        },
+        {
+          "name": "WS /ws/search/{client_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{ws_url}}/ws/search/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "search", "{{client_id}}"] }
+          }
+        },
+        {
+          "name": "WS /ws/rag/{client_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{ws_url}}/ws/rag/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "rag", "{{client_id}}"] }
+          }
+        },
+        {
+          "name": "WS /ws/assistant/{client_id}",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{ws_url}}/ws/assistant/{{client_id}}", "host": ["{{ws_url}}"], "path": ["ws", "assistant", "{{client_id}}"] }
+          }
         }
       ]
     }

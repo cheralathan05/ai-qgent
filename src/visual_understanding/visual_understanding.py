@@ -64,13 +64,34 @@ class VisualUnderstanding:
         ScreenType.LOCK_SCREEN: {"indicators": ["lock screen", "enter pin", "password", "pattern"]},
     }
 
-    APP_PACKAGE_MAP = {
-        "com.instagram.android": "instagram",
-        "com.whatsapp": "whatsapp",
-        "com.android.chrome": "chrome",
-        "com.google.android.youtube": "youtube",
-        "com.android.settings": "settings",
-    }
+    _APP_PACKAGE_MAP = None
+
+    def _get_package_map(self):
+        if VisualUnderstanding._APP_PACKAGE_MAP is not None:
+            return VisualUnderstanding._APP_PACKAGE_MAP
+        try:
+            from services.app_resolver import get_app_resolver
+            resolver = get_app_resolver()
+            if resolver.is_ready():
+                names_map = {}
+                for pkg, info in resolver.package_map.items():
+                    for name in info.normalized_names:
+                        names_map[pkg] = name
+                    if pkg not in names_map:
+                        names_map[pkg] = info.app_label.lower()
+                if names_map:
+                    VisualUnderstanding._APP_PACKAGE_MAP = names_map
+                    return VisualUnderstanding._APP_PACKAGE_MAP
+        except Exception:
+            pass
+        VisualUnderstanding._APP_PACKAGE_MAP = {
+            "com.instagram.android": "instagram",
+            "com.whatsapp": "whatsapp",
+            "com.android.chrome": "chrome",
+            "com.google.android.youtube": "youtube",
+            "com.android.settings": "settings",
+        }
+        return VisualUnderstanding._APP_PACKAGE_MAP
 
     def __init__(self):
         pass
@@ -142,7 +163,8 @@ class VisualUnderstanding:
         )
 
     def _resolve_app_name(self, package: str) -> Optional[str]:
-        return self.APP_PACKAGE_MAP.get(package, package.split(".")[-1] if "." in package else package)
+        pkg_map = self._get_package_map()
+        return pkg_map.get(package, package.split(".")[-1] if "." in package else package)
 
     async def ocr_text(self, image_data: bytes) -> str:
         return ""

@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Body, Depends, File, UploadFile, Form
+from fastapi import APIRouter, HTTPException, Query, Body, Depends, File, UploadFile, Form, BackgroundTasks
 from pydantic import BaseModel
 
 from knowledge.source_connectors import (
@@ -114,7 +114,7 @@ class SourceConfigRequest(BaseModel):
 # ==================== Knowledge APIs ====================
 
 @router.post("/index", summary="Index knowledge sources")
-async def index_knowledge(request: Optional[IndexRequest] = None):
+async def index_knowledge(request: Optional[IndexRequest] = None, background_tasks: BackgroundTasks = None):
     ensure_default_connectors()
     pipeline = get_ingestion_pipeline()
 
@@ -133,8 +133,26 @@ async def index_knowledge(request: Optional[IndexRequest] = None):
                     mime_type="application/octet-stream",
                     content=content.decode('utf-8', errors='replace'),
                 ))
+
+        if len(documents) > 5 and background_tasks:
+            job_id = await pipeline.ingest_documents_background(documents, background_tasks)
+            return {
+                "status": "indexing_started",
+                "job_id": job_id,
+                "message": f"Indexing {len(documents)} documents in background",
+            }
         result = await pipeline.ingest_documents(documents)
     else:
+        connectors = get_all_connectors()
+        total_connectors = len(connectors)
+        if total_connectors > 3 and background_tasks:
+            async def _run_full():
+                await pipeline.run_full_ingestion()
+            background_tasks.add_task(_run_full)
+            return {
+                "status": "indexing_started",
+                "message": f"Full ingestion from {total_connectors} sources started in background",
+            }
         result = await pipeline.run_full_ingestion()
 
     return {
@@ -146,6 +164,15 @@ async def index_knowledge(request: Optional[IndexRequest] = None):
         "errors": result.errors,
         "time_ms": result.time_ms,
     }
+
+
+@router.get("/index/job/{job_id}", summary="Get indexing job status")
+async def get_index_job(job_id: str):
+    pipeline = get_ingestion_pipeline()
+    job = pipeline.get_ingestion_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job_id": job_id, **job}
 
 
 @router.post("/reindex", summary="Reindex all knowledge sources")

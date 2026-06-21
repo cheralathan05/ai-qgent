@@ -170,6 +170,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Knowledge agent init failed: {e}")
 
+    try:
+        from interconnection.assistant import get_assistant_layer
+        from interconnection.workflow import get_interconnection_workflow
+        get_assistant_layer()
+        get_interconnection_workflow()
+        logger.info("Unified Phase1→Phase2→Phase3 interconnection initialized")
+    except Exception as e:
+        logger.warning(f"Interconnection init failed: {e}")
+
     logger.info("All services initialized")
     
     yield
@@ -534,9 +543,9 @@ app.include_router(phase2_router, prefix="/api/phase2")
 from api.phase3 import router as phase3_router
 app.include_router(phase3_router)
 
-# Register Phase 3 API router
-from api.phase3 import router as phase3_router
-app.include_router(phase3_router)
+# Register Unified Interconnection API router (Phase1→Phase2→Phase3)
+from interconnection.api import router as unified_router
+app.include_router(unified_router)
 
 
 # Health check endpoint

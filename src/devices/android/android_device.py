@@ -70,6 +70,7 @@ class AndroidDevice(Device):
         battery_level = await self.get_battery()
         android_version = await self._get_android_version()
         model_name = await self._get_model_name()
+        manufacturer = await self._get_manufacturer()
         screen_state = await self._get_screen_state()
 
         return DeviceInfo(
@@ -82,6 +83,7 @@ class AndroidDevice(Device):
             capabilities={"applications", "screenshots", "input", "notifications", "files"},
             device_type="android",
             model_name=model_name,
+            manufacturer=manufacturer,
             os_version=f"Android {android_version}".strip(),
             android_version=android_version,
             screen_state=screen_state,
@@ -125,17 +127,26 @@ class AndroidDevice(Device):
     async def _get_battery_level(self) -> Optional[int]:
         return await self.get_battery()
 
-    async def _get_android_version(self) -> str:
+    async def _get_android_version(self) -> Optional[str]:
         try:
-            return (await self.adb.shell(self.device_id, "getprop ro.build.version.release")).strip()
+            value = await self.adb.shell(self.device_id, "getprop ro.build.version.release")
+            return value.strip() or None
         except Exception:
-            return ""
+            return None
 
-    async def _get_model_name(self) -> str:
+    async def _get_model_name(self) -> Optional[str]:
         try:
-            return (await self.adb.shell(self.device_id, "getprop ro.product.model")).strip()
+            value = await self.adb.shell(self.device_id, "getprop ro.product.model")
+            return value.strip() or None
         except Exception:
-            return ""
+            return None
+
+    async def _get_manufacturer(self) -> Optional[str]:
+        try:
+            value = await self.adb.shell(self.device_id, "getprop ro.product.manufacturer")
+            return value.strip() or None
+        except Exception:
+            return None
 
     async def _get_screen_state(self) -> str:
         try:
@@ -206,9 +217,10 @@ class AndroidDevice(Device):
             return {
                 "device_id": self.device_id,
                 "connected": False,
-                "status": "disconnected",
+                "status": "offline",
                 "type": "android",
                 "model_name": None,
+                "manufacturer": None,
                 "battery_level": None,
                 "foreground_app": None,
                 "is_locked": False,
@@ -221,6 +233,7 @@ class AndroidDevice(Device):
         devices = await self.adb.list_devices()
         connected = any(device.get("serial") == self.device_id for device in devices)
         model_name = await self._get_model_name() if connected else None
+        manufacturer = await self._get_manufacturer() if connected else None
         android_version = await self._get_android_version() if connected else None
         battery_level = await self.get_battery() if connected else None
         foreground_app = await self.get_foreground_app() if connected else None
@@ -229,9 +242,10 @@ class AndroidDevice(Device):
         return {
             "device_id": self.device_id,
             "connected": connected,
-            "status": "connected" if connected else "disconnected",
+            "status": "online" if connected else "offline",
             "type": "android",
             "model_name": model_name,
+            "manufacturer": manufacturer,
             "battery_level": battery_level,
             "foreground_app": foreground_app,
             "is_locked": is_locked,

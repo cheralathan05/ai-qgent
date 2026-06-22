@@ -5,8 +5,8 @@ from typing import Dict, Any, Optional, Set
 
 
 class DeviceStatus(str, Enum):
-    CONNECTED = "connected"
-    DISCONNECTED = "disconnected"
+    CONNECTED = "online"
+    DISCONNECTED = "offline"
     OBSERVING = "observing"
     CONTROLLING = "controlling"
     EXECUTING = "executing"
@@ -23,6 +23,7 @@ class DeviceInfo:
     capabilities: Set[str]
     device_type: str = "generic"
     model_name: Optional[str] = None
+    manufacturer: Optional[str] = None
     os_version: Optional[str] = None
     android_version: Optional[str] = None
     screen_state: Optional[str] = None
@@ -41,6 +42,7 @@ class DeviceInfo:
             "installed_apps": sorted(self.installed_apps),
             "capabilities": sorted(self.capabilities),
             "model_name": self.model_name,
+            "manufacturer": self.manufacturer,
             "os_version": self.os_version,
             "android_version": self.android_version,
             "screen_state": self.screen_state,

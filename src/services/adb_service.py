@@ -135,6 +135,7 @@ class ADBService:
                 "type": "android",
                 "status": "connected",
                 "model_name": await self.get_model_name(serial),
+                "manufacturer": await self.get_manufacturer(serial),
                 "android_version": await self.get_android_version(serial),
                 "battery_level": await self.get_battery_level(serial),
                 "foreground_app": await self.get_foreground_app(serial),
@@ -147,27 +148,32 @@ class ADBService:
         return devices
 
     def resolve_package_name(self, app_name: str) -> str:
+        """Resolve an app name to a package name using known mappings."""
         if not app_name:
             logger.warning("resolve_package_name called with empty/None app_name")
             return ""
-        return app_name.strip().lower()
+        from understanding.entity_extractor import KNOWN_APPS
+        search = app_name.strip().lower()
+        if search in KNOWN_APPS:
+            return KNOWN_APPS[search]
+        return search
 
     async def resolve_package_dynamic(self, device_id: str, app_name: str) -> Optional[str]:
-        """Resolve app name to package using the dynamic app resolver."""
-        resolver = await self._ensure_resolver(device_id)
-        resolved = resolver.resolve(app_name)
-        if resolved:
+        """Resolve app name to package using the dynamic app resolver, with KNOWN_APPS fallback."""
+        # First try the KNOWN_APPS mapping (fast, no ADB needed)
+        resolved = self.resolve_package_name(app_name)
+        if resolved != app_name.strip().lower():
             return resolved
+        # Then try the dynamic resolver
+        try:
+            resolver = await self._ensure_resolver(device_id)
+            resolved = resolver.resolve(app_name)
+            if resolved:
+                return resolved
+        except Exception:
+            pass
         logger.warning(f"Dynamic resolution failed for '{app_name}', using raw name")
         return app_name.strip().lower()
-
-    async def open_app(self, device_id: str, app_name: str) -> str:
-        """Open an app by name, using dynamic resolution first."""
-        pkg = await self.resolve_package_dynamic(device_id, app_name)
-        return await self.launch_package(device_id, pkg)
-
-    async def launch_package(self, device_id: str, package: str) -> str:
-        return await self._run(["-s", device_id, "shell", command], timeout=self.default_timeout)
 
     async def start_activity(self, device_id: str, package_name: str, activity: str) -> str:
         return await self.shell(device_id, f"am start -n {package_name}/{activity}")
@@ -234,9 +240,22 @@ class ADBService:
     async def dumpsys_power(self, device_id: str) -> str:
         return await self.shell(device_id, "dumpsys power")
 
+    async def shell(self, device_id: str, command: str, timeout: Optional[int] = None) -> str:
+        return await self._run(
+            ["-s", device_id, "shell", command],
+            timeout=timeout or self.default_timeout,
+        )
+
     async def get_model_name(self, device_id: str) -> Optional[str]:
         try:
             value = await self.shell(device_id, "getprop ro.product.model")
+            return value.strip() or None
+        except Exception:
+            return None
+
+    async def get_manufacturer(self, device_id: str) -> Optional[str]:
+        try:
+            value = await self.shell(device_id, "getprop ro.product.manufacturer")
             return value.strip() or None
         except Exception:
             return None
@@ -316,9 +335,10 @@ class ADBService:
         return {
             "device_id": device_id,
             "connected": connected,
-            "status": "connected" if connected else "disconnected",
+            "status": "online" if connected else "offline",
             "type": "android",
             "model_name": model_name,
+            "manufacturer": await self.get_manufacturer(device_id) if connected else None,
             "battery_level": await self.get_battery_level(device_id) if connected else None,
             "foreground_app": await self.get_foreground_app(device_id) if connected else None,
             "is_locked": bool(lock_state) if lock_state is not None else False,

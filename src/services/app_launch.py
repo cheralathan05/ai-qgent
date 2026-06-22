@@ -5,9 +5,50 @@ import logging
 from typing import Any, Dict, Optional
 
 from .adb_service import get_adb_service
+from .app_discovery import get_app_discovery_service
 from .app_resolver import get_app_resolver
 
 logger = logging.getLogger(__name__)
+
+# Fallback mapping for common app names to package names
+# Used when the dynamic resolver cannot find an app on the device
+_FALLBACK_PACKAGES: Dict[str, str] = {
+    "instagram": "com.instagram.android",
+    "insta": "com.instagram.android",
+    "ig": "com.instagram.android",
+    "whatsapp": "com.whatsapp",
+    "wa": "com.whatsapp",
+    "chrome": "com.android.chrome",
+    "browser": "com.android.chrome",
+    "youtube": "com.google.android.youtube",
+    "yt": "com.google.android.youtube",
+    "settings": "com.android.settings",
+    "gmail": "com.google.android.gm",
+    "maps": "com.google.android.apps.maps",
+    "google maps": "com.google.android.apps.maps",
+    "camera": "com.android.camera",
+    "phone": "com.android.dialer",
+    "dialer": "com.android.dialer",
+    "calculator": "com.android.calculator2",
+    "calendar": "com.google.android.calendar",
+    "play store": "com.android.vending",
+    "spotify": "com.spotify.music",
+    "twitter": "com.twitter.android",
+    "x": "com.twitter.android",
+    "facebook": "com.facebook.katana",
+    "fb": "com.facebook.katana",
+    "messages": "com.google.android.apps.messaging",
+    "sms": "com.google.android.apps.messaging",
+    "clock": "com.google.android.deskclock",
+    "files": "com.android.documentsui",
+    "drive": "com.google.android.apps.docs",
+    "photos": "com.google.android.apps.photos",
+    "telegram": "org.telegram.messenger",
+    "discord": "com.discord",
+    "linkedin": "com.linkedin.android",
+    "messenger": "com.facebook.orca",
+    "snapchat": "com.snapchat.android",
+}
 
 
 class AppLaunchResult:
@@ -48,7 +89,11 @@ class AppLaunchService:
 
     def __init__(self, adb_service=None, resolver=None):
         self.adb = adb_service or get_adb_service()
-        self.resolver = resolver or get_app_resolver()
+        if resolver is None:
+            discovery = get_app_discovery_service(adb_service=self.adb)
+            self.resolver = get_app_resolver(discovery_service=discovery)
+        else:
+            self.resolver = resolver
 
     async def resolve_activity(self, device_id: str, package: str) -> Optional[str]:
         """Resolve the launch activity for a package dynamically via ADB."""
@@ -68,20 +113,39 @@ class AppLaunchService:
             logger.debug(f"Activity resolution for {package} failed: {e}")
             return None
 
+    def _resolve_package_fallback(self, app_name: str) -> Optional[str]:
+        """Resolve app name to package using the KNOWN_APPS fallback mapping."""
+        if not app_name:
+            return None
+        search = app_name.strip().lower()
+        # Direct lookup
+        if search in _FALLBACK_PACKAGES:
+            return _FALLBACK_PACKAGES[search]
+        # Partial match: check if search is a substring of any key
+        for name, pkg in _FALLBACK_PACKAGES.items():
+            if search in name or name in search:
+                return pkg
+        return None
+
     async def launch_app(self, device_id: str, app_name: str) -> AppLaunchResult:
         """Launch an app by name with full dynamic resolution and verification."""
         await self.resolver.ensure_registry(device_id)
 
         app_info = self.resolver.resolve_with_info(app_name)
-        if not app_info:
-            result = AppLaunchResult(
-                success=False,
-                error=f"App '{app_name}' not found on device",
-                verification="not_found",
-            )
-            return result
-
-        package = app_info.package_name
+        package = None
+        if app_info:
+            package = app_info.package_name
+        else:
+            # Fallback: use KNOWN_APPS mapping
+            package = self._resolve_package_fallback(app_name)
+            if not package:
+                result = AppLaunchResult(
+                    success=False,
+                    error=f"App '{app_name}' not found on device",
+                    verification="not_found",
+                )
+                return result
+            logger.info(f"Using fallback package mapping for '{app_name}': {package}")
         launch_method = None
         launch_error = None
 
@@ -171,7 +235,10 @@ class AppLaunchService:
         """Force stop an app."""
         await self.resolver.ensure_registry(device_id)
         app_info = self.resolver.resolve_with_info(app_name)
-        package = app_info.package_name if app_info else app_name
+        if app_info:
+            package = app_info.package_name
+        else:
+            package = self._resolve_package_fallback(app_name) or app_name
 
         try:
             await self.adb.shell(device_id, f"am force-stop {package}")
@@ -193,4 +260,7 @@ def get_app_launch_service(adb_service=None, resolver=None) -> AppLaunchService:
         _app_launch_service.adb = adb_service
     elif resolver is not None:
         _app_launch_service.resolver = resolver
+    # Cascade ADB to discovery service so app scanning works
+    if _app_launch_service.adb:
+        get_app_discovery_service(adb_service=_app_launch_service.adb)
     return _app_launch_service

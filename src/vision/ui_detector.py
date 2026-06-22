@@ -83,7 +83,7 @@ class UIDetector:
         text_regions = self._detect_text_regions_from_ocr(ocr_result)
         buttons = self._detect_buttons(gray, binary, image, ocr_result, w, h)
         inputs = self._detect_inputs(gray, binary, ocr_result, w, h)
-        icons = self._detect_icons(binary, gray, w, h)
+        icons = self._detect_icons(binary, w, h)
         tabs = self._detect_tabs(buttons, ocr_result, h)
         menus = self._detect_menus(buttons, h)
         images = self._detect_images(gray, w, h)

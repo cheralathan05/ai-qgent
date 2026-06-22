@@ -486,7 +486,6 @@ async def _execute_user_command(
                 message_verified = False
                 if app == "whatsapp" and phone:
                     try:
-                        from services.app_launch import get_app_launch_service
                         launch_svc = get_app_launch_service(adb_service=adb)
                         wa_pkg = await adb.resolve_package_dynamic(real_device_id, "whatsapp")
                         wa_pkg = wa_pkg or "com.whatsapp"

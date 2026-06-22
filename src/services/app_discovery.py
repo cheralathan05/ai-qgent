@@ -1,10 +1,9 @@
 """AppDiscoveryService - Discovers installed Android apps via ADB."""
 
-import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Set
+from typing import List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -86,129 +85,39 @@ class AppDiscoveryService:
             return set()
 
     async def _get_app_info(self, device_id: str, package: str, system_packages: Set[str]) -> Optional[AppInfo]:
-        """Get detailed info for a single package."""
+        """Get info for a single package. Uses heuristic labels (fast, no per-package ADB)."""
         app_label = self._extract_label_from_package(package)
-
-        launch_activity = await self._resolve_activity(device_id, package)
-        version = await self._get_app_version(device_id, package)
-        install_time = await self._get_install_time(device_id, package)
-        is_system = package in system_packages
-
-        try:
-            label_from_device = await self._get_app_label(device_id, package)
-            if label_from_device:
-                app_label = label_from_device
-        except Exception:
-            pass
 
         normalized_names = self._generate_normalized_names(package, app_label)
 
         return AppInfo(
             package_name=package,
             app_label=app_label,
-            launch_activity=launch_activity,
-            is_system_app=is_system,
-            install_time=install_time,
-            version=version,
+            launch_activity=None,
+            is_system_app=package in system_packages,
+            install_time=None,
+            version=None,
             normalized_names=normalized_names,
         )
 
-    async def _resolve_activity(self, device_id: str, package: str) -> Optional[str]:
-        """Resolve launch activity for a package dynamically."""
-        try:
-            output = await self.adb.shell(
-                device_id,
-                f"cmd package resolve-activity --brief {package}",
-            )
-            for line in output.splitlines():
-                line = line.strip()
-                if "/." in line and package in line:
-                    return line
-                if line.startswith(package):
-                    return line
-            return None
-        except Exception as e:
-            logger.debug(f"Could not resolve activity for {package}: {e}")
-            return None
-
-    async def _get_app_label(self, device_id: str, package: str) -> Optional[str]:
-        """Get human-readable app label from package dump."""
-        try:
-            output = await self.adb.shell(
-                device_id,
-                f"dumpsys package {package}",
-            )
-            for line in output.splitlines():
-                line_lower = line.strip().lower()
-                if line_lower.startswith("application-label:"):
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        return parts[1].strip()
-                if "application-label:" in line_lower:
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        base = parts[1].strip()
-                        if base and not base.startswith("application-label"):
-                            return base
-            return None
-        except Exception:
-            return None
-
-    async def _get_app_version(self, device_id: str, package: str) -> Optional[str]:
-        """Get version name for a package."""
-        try:
-            output = await self.adb.shell(
-                device_id,
-                f"dumpsys package {package}",
-            )
-            match = re.search(r"versionName=([^\s]+)", output)
-            if match:
-                return match.group(1)
-            return None
-        except Exception:
-            return None
-
-    async def _get_install_time(self, device_id: str, package: str) -> Optional[str]:
-        """Get first install time for a package."""
-        try:
-            output = await self.adb.shell(
-                device_id,
-                f"dumpsys package {package}",
-            )
-            match = re.search(r"firstInstallTime=([^\s]+)", output)
-            if match:
-                return match.group(1)
-            return None
-        except Exception:
-            return None
-
     def _extract_label_from_package(self, package: str) -> str:
         """Derive a human-readable label from the package name."""
+        common_suffixes = {"android", "app", "google", "mobile", "imobile"}
         parts = package.split(".")
-        if len(parts) >= 2:
-            label = parts[-1]
+
+        # Walk backwards from the last segment to find a non-common label.
+        for i in range(len(parts) - 1, -1, -1):
+            candidate = parts[i]
+            if candidate.lower() not in common_suffixes and len(candidate) > 1:
+                label = candidate
+                break
         else:
-            label = package
+            label = parts[-1] if parts else package
 
         label = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', label)
         label = label.replace("_", " ").replace("-", " ")
-        words = label.split()
-        meaningful_words = [w for w in words if len(w) > 1 or w.isalpha()]
-        if not meaningful_words:
-            meaningful_words = [label]
-
-        final_label = " ".join(meaningful_words).strip()
-
-        common_suffixes = [
-            "android", "app", "google", "mobile", "imobile",
-        ]
-        words = final_label.split()
-        filtered = [w for w in words if w.lower() not in common_suffixes]
-        if filtered:
-            final_label = " ".join(filtered)
-
-        if not final_label:
-            final_label = parts[-2] if len(parts) >= 2 else package
+        words = [w for w in label.split() if len(w) > 1 or w.isalpha()]
+        final_label = " ".join(words).strip() if words else label
 
         return final_label.title()
 

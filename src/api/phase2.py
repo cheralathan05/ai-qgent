@@ -23,20 +23,20 @@ router = APIRouter(tags=["Phase 2"])
 
 
 class ScreenCaptureRequest(BaseModel):
-    device_id: str = "7f0deaf6"
+    device_id: Optional[str] = None
 
 
 class ScreenAnalyzeRequest(BaseModel):
-    device_id: str = "7f0deaf6"
+    device_id: Optional[str] = None
     foreground_app: Optional[str] = None
 
 
 class OCRRequest(BaseModel):
-    device_id: str = "7f0deaf6"
+    device_id: Optional[str] = None
 
 
 class VerifyRequest(BaseModel):
-    device_id: str = "7f0deaf6"
+    device_id: Optional[str] = None
     expected_screen: Optional[str] = None
     expected_app: Optional[str] = None
     expected_text: Optional[str] = None
@@ -45,29 +45,29 @@ class VerifyRequest(BaseModel):
 
 
 class NavigationPlanRequest(BaseModel):
-    device_id: str = "7f0deaf6"
+    device_id: Optional[str] = None
     target_screen: str
     target_app: Optional[str] = None
 
 
 class SendMessageRequest(BaseModel):
-    device_id: str = "7f0deaf6"
+    device_id: Optional[str] = None
     app: str = "whatsapp"
     recipient: str
     message: str
 
 
 class ReplyRequest(BaseModel):
-    device_id: str = "7f0deaf6"
+    device_id: Optional[str] = None
     message: str
 
 
 class MessageHistoryRequest(BaseModel):
-    device_id: str = "7f0deaf6"
+    device_id: Optional[str] = None
     limit: int = 50
 
 
-async def _get_adb_device_id(preferred: str) -> Optional[str]:
+async def _get_adb_device_id(preferred: Optional[str] = None) -> Optional[str]:
     try:
         adb = get_adb_service(find_adb_binary())
         devices = await adb.list_devices()
@@ -75,7 +75,7 @@ async def _get_adb_device_id(preferred: str) -> Optional[str]:
             return devices[0]["serial"]
     except Exception:
         pass
-    return preferred if preferred != "7f0deaf6" else None
+    return preferred
 
 
 async def _capture_and_analyze(device_id: str, foreground_app: Optional[str] = None) -> dict:
@@ -252,7 +252,7 @@ async def screen_ocr(request: OCRRequest) -> Dict[str, Any]:
 
 
 @router.get("/screen/current")
-async def screen_current(device_id: str = "7f0deaf6") -> Dict[str, Any]:
+async def screen_current(device_id: Optional[str] = None) -> Dict[str, Any]:
     memory = get_phone_memory()
     current = memory.get_current_screen(device_id)
     if not current:
@@ -261,7 +261,7 @@ async def screen_current(device_id: str = "7f0deaf6") -> Dict[str, Any]:
 
 
 @router.get("/screen/layout")
-async def screen_layout(device_id: str = "7f0deaf6") -> Dict[str, Any]:
+async def screen_layout(device_id: Optional[str] = None) -> Dict[str, Any]:
     real_device = await _get_adb_device_id(device_id)
     if not real_device:
         return {"success": False, "error": "No Android device connected via ADB"}
@@ -278,7 +278,7 @@ async def screen_layout(device_id: str = "7f0deaf6") -> Dict[str, Any]:
 
 
 @router.get("/screen/elements")
-async def screen_elements(device_id: str = "7f0deaf6") -> Dict[str, Any]:
+async def screen_elements(device_id: Optional[str] = None) -> Dict[str, Any]:
     real_device = await _get_adb_device_id(device_id)
     if not real_device:
         return {"success": False, "error": "No Android device connected via ADB"}
@@ -297,7 +297,7 @@ async def screen_elements(device_id: str = "7f0deaf6") -> Dict[str, Any]:
 
 
 @router.get("/screen/history")
-async def screen_history(device_id: str = "7f0deaf6", limit: int = Query(50, le=200)) -> Dict[str, Any]:
+async def screen_history(device_id: Optional[str] = None, limit: int = Query(50, le=200)) -> Dict[str, Any]:
     memory = get_phone_memory()
     screens = memory.get_screen_history(device_id, limit)
     return {
@@ -308,7 +308,7 @@ async def screen_history(device_id: str = "7f0deaf6", limit: int = Query(50, le=
 
 
 @router.get("/screen/navigation")
-async def screen_navigation(device_id: str = "7f0deaf6", limit: int = Query(50, le=200)) -> Dict[str, Any]:
+async def screen_navigation(device_id: Optional[str] = None, limit: int = Query(50, le=200)) -> Dict[str, Any]:
     memory = get_phone_memory()
     navs = memory.get_navigation_history(device_id, limit)
     return {
@@ -319,7 +319,7 @@ async def screen_navigation(device_id: str = "7f0deaf6", limit: int = Query(50, 
 
 
 @router.get("/screen/classification")
-async def screen_classification(device_id: str = "7f0deaf6") -> Dict[str, Any]:
+async def screen_classification(device_id: Optional[str] = None) -> Dict[str, Any]:
     memory = get_phone_memory()
     current = memory.get_current_screen(device_id)
     if not current:
@@ -338,7 +338,7 @@ async def screen_classification(device_id: str = "7f0deaf6") -> Dict[str, Any]:
 # ==================== Memory APIs ====================
 
 @router.get("/memory/current")
-async def memory_current(device_id: str = "7f0deaf6") -> Dict[str, Any]:
+async def memory_current(device_id: Optional[str] = None) -> Dict[str, Any]:
     memory = get_phone_memory()
     current = memory.get_current_screen(device_id)
     previous = memory.get_previous_screen(device_id)
@@ -352,7 +352,7 @@ async def memory_current(device_id: str = "7f0deaf6") -> Dict[str, Any]:
 
 
 @router.get("/memory/history")
-async def memory_history(device_id: str = "7f0deaf6") -> Dict[str, Any]:
+async def memory_history(device_id: Optional[str] = None) -> Dict[str, Any]:
     memory = get_phone_memory()
     return {
         "success": True, "device_id": device_id,
@@ -364,7 +364,7 @@ async def memory_history(device_id: str = "7f0deaf6") -> Dict[str, Any]:
 
 
 @router.delete("/memory/clear")
-async def memory_clear(device_id: str = "7f0deaf6") -> Dict[str, str]:
+async def memory_clear(device_id: Optional[str] = None) -> Dict[str, str]:
     get_phone_memory().clear_history(device_id)
     event_manager = get_event_manager()
     await event_manager.emit(
@@ -375,7 +375,7 @@ async def memory_clear(device_id: str = "7f0deaf6") -> Dict[str, str]:
 
 
 @router.get("/memory/context")
-async def memory_context(device_id: str = "7f0deaf6") -> Dict[str, Any]:
+async def memory_context(device_id: Optional[str] = None) -> Dict[str, Any]:
     summary = get_phone_memory().get_context_summary(device_id)
     return {"success": True, "context": summary}
 
@@ -383,7 +383,7 @@ async def memory_context(device_id: str = "7f0deaf6") -> Dict[str, Any]:
 # ==================== Navigation APIs ====================
 
 @router.get("/navigation/current")
-async def navigation_current(device_id: str = "7f0deaf6") -> Dict[str, Any]:
+async def navigation_current(device_id: Optional[str] = None) -> Dict[str, Any]:
     nav = get_navigation_intelligence()
     current = nav.get_current_position(device_id)
     recent = nav.get_recent_screen_types(device_id, 10)
@@ -506,8 +506,25 @@ async def navigation_execute(request: NavigationPlanRequest) -> Dict[str, Any]:
                 if inst.text:
                     await adb.input_text(real_device, inst.text)
                 executed.append({"step": inst.step_type, "text": inst.text[:20], "success": True})
+            elif inst.step_type == "swipe":
+                direction = inst.params.get("direction", "down") if inst.params else "down"
+                if direction == "down":
+                    await adb.shell(real_device, "input swipe 500 1000 500 200")
+                elif direction == "up":
+                    await adb.shell(real_device, "input swipe 500 200 500 1000")
+                executed.append({"step": inst.step_type, "direction": direction, "success": True})
+            elif inst.step_type == "go_back":
+                await adb.press_back(real_device)
+                executed.append({"step": inst.step_type, "success": True})
+            elif inst.step_type == "go_home":
+                await adb.press_home(real_device)
+                executed.append({"step": inst.step_type, "success": True})
+            elif inst.step_type == "launch_activity":
+                if inst.target and inst.activity:
+                    await adb.start_activity(real_device, inst.target, inst.activity)
+                executed.append({"step": inst.step_type, "target": inst.target, "success": True})
             else:
-                executed.append({"step": inst.step_type, "target": inst.target, "success": True, "note": "simulated"})
+                executed.append({"step": inst.step_type, "target": inst.target, "success": False, "error": f"Unknown step type: {inst.step_type}"})
         except Exception as e:
             executed.append({"step": inst.step_type, "target": inst.target, "success": False, "error": str(e)})
 
@@ -656,8 +673,19 @@ async def messages_reply(request: ReplyRequest) -> Dict[str, Any]:
                 import asyncio
                 await asyncio.sleep(inst.duration)
                 executed.append({"step": "wait", "success": True})
+            elif inst.step_type == "press_key":
+                key_map = {"KEYCODE_BACK": 4, "KEYCODE_HOME": 3, "KEYCODE_ENTER": 66}
+                keycode = key_map.get(inst.keycode, 4)
+                await adb.press_key(real_device, keycode)
+                executed.append({"step": "press_key", "keycode": inst.keycode, "success": True})
+            elif inst.step_type == "go_back":
+                await adb.press_back(real_device)
+                executed.append({"step": "go_back", "success": True})
+            elif inst.step_type == "go_home":
+                await adb.press_home(real_device)
+                executed.append({"step": "go_home", "success": True})
             else:
-                executed.append({"step": inst.step_type, "success": True, "note": "simulated"})
+                executed.append({"step": inst.step_type, "success": False, "error": f"Unknown step type: {inst.step_type}"})
         except Exception as e:
             executed.append({"step": inst.step_type, "success": False, "error": str(e)})
 
@@ -670,7 +698,7 @@ async def messages_reply(request: ReplyRequest) -> Dict[str, Any]:
 
 
 @router.get("/messages/history")
-async def messages_history(device_id: str = "7f0deaf6", limit: int = Query(50, le=200)) -> Dict[str, Any]:
+async def messages_history(device_id: Optional[str] = None, limit: int = Query(50, le=200)) -> Dict[str, Any]:
     memory = get_phone_memory()
     screens = memory.get_screen_history(device_id, limit)
     message_screens = [s.to_dict() for s in screens if s.screen_type in (

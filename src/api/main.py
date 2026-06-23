@@ -39,6 +39,8 @@ from services.app_launch import get_app_launch_service
 from services.app_discovery import get_app_discovery_service
 from config import Config
 from api.life_direction import router as life_direction_router
+from api.v1 import router as v1_router
+from api.apa_os_api import router as apa_os_router
 
 # Layer imports
 from screen_memory import get_screen_memory
@@ -322,7 +324,7 @@ async def _execute_user_command(
     """Route user command through the intent pipeline and execute on the real device."""
     orchestrator = get_workflow_engine(session=session)
     resolved_user_id = user_id or DEFAULT_USER_ID
-    resolved_device_id = device_id or await _resolve_adb_device() or "7f0deaf6"
+    resolved_device_id = device_id or await _resolve_adb_device()
 
     # Emit CommandReceived
     await _emit_event(
@@ -789,7 +791,7 @@ async def _record_execution(
     for index, result in enumerate(execution_result.get("results", []) or [], start=1):
         session.add(DeviceAction(
             workflow_id=workflow.id,
-            device_id=workflow.device_id or "7f0deaf6",
+            device_id=workflow.device_id,
             action_type=result.get("type") or f"step_{index}",
             action_data=result,
             status=result.get("status", "success"),
@@ -1143,7 +1145,7 @@ async def create_workflow(
         session_device_id=conversation_result.session.current_device_id,
     )
 
-    target_dev = selection.device_id if selection.available else "7f0deaf6"
+    target_dev = selection.device_id if selection.available else await _resolve_adb_device()
     device_label = selection.display_name.lower() if selection.display_name else "phone"
 
     # Build pre-execution assistant reply
@@ -1232,7 +1234,7 @@ async def execute_command(
     await bootstrap_phase1_environment()
     cmd_text = request.command or "Open Instagram"
     resolved_uid = request.user_id or DEFAULT_USER_ID
-    target_dev = request.device_id or await _resolve_adb_device() or "7f0deaf6"
+    target_dev = request.device_id or await _resolve_adb_device()
 
     workflow = Workflow(
         user_id=resolved_uid,
@@ -1326,7 +1328,7 @@ async def execute_voice_command(
             transcript = "Open Instagram"
 
         resolved_uid = user_id or DEFAULT_USER_ID
-        target_dev = device_id or "7f0deaf6"
+        target_dev = device_id or await _resolve_adb_device()
 
         workflow = Workflow(
             user_id=resolved_uid,
@@ -1536,7 +1538,7 @@ async def phase1_open_app(
     await bootstrap_phase1_environment()
     cmd_text = request.command or "Open Instagram"
     resolved_uid = request.user_id or DEFAULT_USER_ID
-    target_dev = request.device_id or "7f0deaf6"
+    target_dev = request.device_id or await _resolve_adb_device()
     result = await _execute_user_command(session=session, command=cmd_text, user_id=resolved_uid, device_id=target_dev)
     return _build_simple_response(result, cmd_text)
 
@@ -1550,7 +1552,7 @@ async def phase1_verify(session=Depends(get_session)) -> Dict[str, Any]:
         "workflows_stored": len(workflows) > 0,
         "events_system_active": event_manager is not None,
         "workflow_count": len(workflows),
-        "has_android_device": device_manager.get_device("7f0deaf6") is not None,
+        "has_android_device": len(await adb.list_devices()) > 0,
         "has_windows_device": device_manager.get_device("laptop") is not None,
     }
 
@@ -1619,7 +1621,7 @@ async def phase2_reply_message(
 async def phase2_navigate_screens(session=Depends(get_session)) -> Dict[str, Any]:
     screen_memory = get_screen_memory()
     navigation = get_navigation_engine()
-    context = navigation.get_context_summary("7f0deaf6")
+    context = navigation.get_context_summary(device_id) if device_id else {}
     return {
         "navigation_enabled": True,
         "screen_memory_active": True,
@@ -1752,7 +1754,7 @@ async def device_dashboard() -> Dict[str, Any]:
 @app.post("/api/verify/action", tags=["Action Verification"])
 async def verify_action_api(
     action_type: str = "launch_app",
-    device_id: str = "7f0deaf6",
+    device_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     verifier = get_action_verifier()
     if action_type == "launch_app":
@@ -1800,7 +1802,7 @@ async def execute_plugin_action(
     params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     registry = get_plugin_registry()
-    result = await registry.execute_action(app_name, action, params or {}, device_id="7f0deaf6")
+    result = await registry.execute_action(app_name, action, params or {}, device_id=device_id)
     return {"success": result.success, "data": result.data, "error": result.error}
 
 
@@ -1849,6 +1851,12 @@ async def _register_plugins() -> None:
 
 # Include life direction API routes explicitly
 app.include_router(life_direction_router)
+
+# Include V1 API routes (clean, production-grade endpoints)
+app.include_router(v1_router)
+
+# Include APA-OS Universal API routes
+app.include_router(apa_os_router)
 
 
 # ==================== App Registry APIs (Dynamic Discovery) ====================
@@ -1923,7 +1931,7 @@ async def execute_workflow_background(workflow_id: str):
         await orchestrator.execute_command(
             user_id=workflow.user_id,
             command=workflow.command,
-            device_id=workflow.device_id or "7f0deaf6",
+            device_id=workflow.device_id,
             workflow_id=workflow.id,
         )
     except Exception as exc:

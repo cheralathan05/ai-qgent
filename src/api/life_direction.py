@@ -32,7 +32,7 @@ class CommandRequest(BaseModel):
 
 class VoiceRequest(BaseModel):
     audio_base64: Optional[str] = None
-    mock_voice_text: Optional[str] = "Open Instagram"
+    voice_text: Optional[str] = None
 
 async def _resolve_app_package(app_name: str) -> Optional[str]:
     """Resolve app name to package using dynamic resolver."""
@@ -94,11 +94,29 @@ async def execute_phase1_pipeline(command_text: str, session) -> Dict[str, Any]:
 
     # 3. Target Device Selector Loop
     devices = device_manager.get_all_devices()
-    target_device_id = "7f0deaf6"  # Baseline fallback target serial
+    target_device_id = None
     for d_id, dev in devices.items():
         if getattr(dev, "type", "windows") == "android":
             target_device_id = d_id
             break
+    
+    if not target_device_id:
+        # Try to discover devices via ADB
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["adb", "devices"],
+                capture_output=True, text=True, timeout=5
+            )
+            for line in result.stdout.splitlines()[1:]:
+                if line.strip() and "device" in line:
+                    target_device_id = line.split("\t")[0]
+                    break
+        except Exception:
+            pass
+    
+    if not target_device_id:
+        return {"success": False, "error": "No Android device connected"}
 
     # 4. Plan Step Generation (Planner Agent)
     steps = [
@@ -197,7 +215,7 @@ async def post_command(req: CommandRequest, session=Depends(get_db_session)):
 @router.post("/voice")
 async def post_voice(req: VoiceRequest, session=Depends(get_db_session)):
     """Simulates voice pipelines by proxying output transcriptions through Whisper emulator matrices."""
-    extracted_text = req.mock_voice_text if req.mock_voice_text else "Open Instagram"
+    extracted_text = req.voice_text if req.voice_text else "Open Instagram"
     pipeline_result = await execute_phase1_pipeline(extracted_text, session)
     
     target_clean = pipeline_result["target"]

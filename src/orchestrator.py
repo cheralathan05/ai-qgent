@@ -1301,7 +1301,7 @@ class WorkflowOrchestrator:
             if self.adb is not None:
                 result = await self.adb.shell(device_id, "dumpsys battery")
                 return {"status": "success", "type": "battery_info", "data": result}
-            return {"status": "success", "type": "battery_info", "data": "Battery: 85%"}
+            return {"status": "failed", "type": "battery_info", "error": "No ADB connection"}
 
         elif step_type == "take_screenshot":
             return {"status": "success", "type": "screenshot_taken"}

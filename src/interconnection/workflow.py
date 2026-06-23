@@ -288,8 +288,9 @@ class InterconnectionWorkflow:
                     p1.status = "completed"
                     p1.details = {"battery_info": output}
                 except Exception as e:
-                    p1.details = {"battery_info": "Battery: 85% (simulated)", "error": str(e)}
-                    p1.success = True
+                    p1.success = False
+                    p1.status = "failed"
+                    p1.details = {"error": f"Battery check failed: {str(e)}"}
 
             elif action == "get_foreground_app":
                 try:

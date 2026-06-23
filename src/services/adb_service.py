@@ -220,9 +220,29 @@ class ADBService:
     async def input_tap(self, device_id: str, x: int, y: int) -> str:
         return await self.shell(device_id, f"input tap {x} {y}")
 
+    async def input_long_press(self, device_id: str, x: int, y: int, duration_ms: int = 1000) -> str:
+        return await self.shell(device_id, f"input swipe {x} {y} {x} {y} {duration_ms}")
+
     async def input_text(self, device_id: str, text: str) -> str:
+        # Use ADB input text with proper escaping
+        # Replace spaces with %s for ADB
         escaped = text.replace(" ", "%s")
-        return await self.shell(device_id, f"input text {escaped}")
+        # Escape special shell characters
+        escaped = escaped.replace("&", "\\&")
+        escaped = escaped.replace("<", "\\<")
+        escaped = escaped.replace(">", "\\>")
+        escaped = escaped.replace("(", "\\(")
+        escaped = escaped.replace(")", "\\)")
+        escaped = escaped.replace("'", "\\'")
+        escaped = escaped.replace('"', '\\"')
+        escaped = escaped.replace(";", "\\;")
+        escaped = escaped.replace("|", "\\|")
+        escaped = escaped.replace("$", "\\$")
+        escaped = escaped.replace("!", "\\!")
+        return await self.shell(device_id, f"input text '{escaped}'")
+
+    async def input_keyevent(self, device_id: str, keycode: int) -> str:
+        return await self.shell(device_id, f"input keyevent {keycode}")
 
     async def screencap(self, device_id: str, output_path: str) -> bytes:
         data = await self.shell(device_id, f"screencap -p")

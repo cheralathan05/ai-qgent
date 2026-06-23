@@ -1,4 +1,6 @@
 import logging
+import asyncio
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
@@ -61,6 +63,23 @@ class NavigationPath:
         }
 
 
+@dataclass
+class ScreenAnalysis:
+    """Analysis of current screen state."""
+    app_name: str = ""
+    screen_type: str = ""
+    has_search_bar: bool = False
+    has_message_input: bool = False
+    has_send_button: bool = False
+    has_chat_list: bool = False
+    has_recipient: bool = False
+    recipient_name: str = ""
+    ocr_text: str = ""
+    elements: List[DetectedUIElement] = field(default_factory=list)
+    image_width: int = 0
+    image_height: int = 0
+
+
 class NavigationIntelligence:
     def __init__(self):
         self._phone_memory = get_phone_memory()
@@ -89,14 +108,153 @@ class NavigationIntelligence:
     def get_app_context(self, device_id: str, app_name: str) -> Optional[AppContext]:
         return self._phone_memory.get_app_context(device_id, app_name)
 
+    async def analyze_screen(self, device_id: str) -> ScreenAnalysis:
+        """Analyze current screen to understand what's showing."""
+        analysis = ScreenAnalysis()
+
+        try:
+            capture = self._capture
+            result = await capture.capture_from_adb(device_id)
+            if not result.success or result.image is None:
+                return analysis
+
+            h, w = result.image.shape[:2]
+            analysis.image_width = w
+            analysis.image_height = h
+
+            # Get OCR text
+            ocr_result = await self._ocr.extract_text(result.image)
+            analysis.ocr_text = ocr_result.full_text
+
+            # Get UI elements
+            ui_result = await self._ui_detector.detect_elements(result.image)
+            analysis.elements = ui_result.elements
+
+            # Analyze what's on screen
+            text_lower = ocr_result.full_text.lower()
+
+            # Detect search bar
+            search_indicators = ["search", "find", "🔍"]
+            analysis.has_search_bar = any(ind in text_lower for ind in search_indicators)
+
+            # Detect message input
+            input_indicators = ["type a message", "message", "type a message", "enter message"]
+            analysis.has_message_input = any(ind in text_lower for ind in input_indicators)
+
+            # Detect send button
+            send_indicators = ["send", "➤", "↑", "✈"]
+            analysis.has_send_button = any(ind in text_lower for ind in send_indicators)
+
+            # Detect chat list indicators
+            chat_list_indicators = ["chats", "calls", "status", "camera"]
+            analysis.has_chat_list = sum(1 for ind in chat_list_indicators if ind in text_lower) >= 2
+
+            # Detect if we're in WhatsApp
+            if "whatsapp" in text_lower or any(ind in text_lower for ind in [" chats", " calls", " status"]):
+                analysis.app_name = "whatsapp"
+            elif "instagram" in text_lower:
+                analysis.app_name = "instagram"
+            elif "telegram" in text_lower:
+                analysis.app_name = "telegram"
+
+            # Check if recipient name appears on screen
+            # This would need to be passed in or checked against known contacts
+
+        except Exception as e:
+            logger.error(f"Screen analysis failed: {e}")
+
+        return analysis
+
+    async def analyze_screen_for_recipient(self, device_id: str, recipient: str) -> ScreenAnalysis:
+        """Analyze screen specifically to find recipient."""
+        analysis = await self.analyze_screen(device_id)
+
+        # Check if recipient name appears on screen
+        text_lower = analysis.ocr_text.lower()
+        recipient_lower = recipient.lower()
+
+        if recipient_lower in text_lower:
+            analysis.has_recipient = True
+            analysis.recipient_name = recipient
+
+        return analysis
+
+    def _derive_app_from_screen(self, target_screen: ScreenType) -> Optional[str]:
+        screen_value = target_screen.value
+        app_prefixes = {
+            "whatsapp": "whatsapp",
+            "instagram": "instagram",
+            "chrome": "chrome",
+            "youtube": "youtube",
+            "gmail": "gmail",
+            "telegram": "telegram",
+            "discord": "discord",
+            "linkedin": "linkedin",
+            "twitter": "twitter",
+            "facebook": "facebook",
+            "messenger": "messenger",
+            "spotify": "spotify",
+            "google_maps": "maps",
+            "settings": "settings",
+            "phone": "phone",
+        }
+        for prefix, app_name in app_prefixes.items():
+            if screen_value.startswith(prefix):
+                return app_name
+        return None
+
+    def _find_closest_screen_type(self, target_screen_str: str) -> ScreenType:
+        target_lower = target_screen_str.lower().strip()
+
+        for st in ScreenType:
+            if st.value == target_lower:
+                return st
+
+        for st in ScreenType:
+            if st == ScreenType.UNKNOWN:
+                continue
+            if target_lower in st.value or st.value in target_lower:
+                return st
+
+        app_screens = {
+            "instagram": ["dm_chat", "dm", "feed", "profile", "reels", "stories"],
+            "whatsapp": ["chat", "inbox", "status", "calls"],
+            "telegram": ["chat", "inbox", "contacts"],
+            "discord": ["chat", "dm_list", "channel_list"],
+            "messenger": ["chat", "inbox"],
+            "youtube": ["home", "search", "video_player", "shorts"],
+            "gmail": ["inbox", "email_view", "compose"],
+            "chrome": ["browser", "tab_switcher"],
+            "twitter": ["timeline", "search", "messages"],
+            "linkedin": ["feed", "messages", "jobs"],
+        }
+
+        for app_name, screens in app_screens.items():
+            if app_name in target_lower:
+                for screen in screens:
+                    if screen in target_lower or target_lower.endswith(screen):
+                        screen_type_name = f"{app_name}_{screen}".upper()
+                        for st in ScreenType:
+                            if st.name == screen_type_name:
+                                return st
+
+        return ScreenType.UNKNOWN
+
     def plan_path_to_screen(
         self,
         device_id: str,
         target_screen: ScreenType,
         target_app: Optional[str] = None,
+        raw_target: Optional[str] = None,
     ) -> NavigationPath:
         current = self._phone_memory.get_current_screen(device_id)
         instructions: List[NavigationInstruction] = []
+
+        if target_screen == ScreenType.UNKNOWN and raw_target:
+            target_screen = self._find_closest_screen_type(raw_target)
+
+        if not target_app:
+            target_app = self._derive_app_from_screen(target_screen)
 
         if current and current.app_name and current.screen_type == target_screen:
             return NavigationPath(
@@ -135,8 +293,13 @@ class NavigationIntelligence:
                 target=target_app,
                 description=f"Open {target_app} to reach {target_screen.value}",
             ))
+            instructions.append(NavigationInstruction(
+                step_type=NavigationStepType.WAIT,
+                duration=3.0,
+                description="Wait for app to load",
+            ))
 
-        confidence = 0.7 if instructions else 0.1
+        confidence = 0.7 if len(instructions) > 2 else (0.5 if instructions else 0.1)
 
         return NavigationPath(
             target_screen=target_screen.value,
@@ -156,11 +319,41 @@ class NavigationIntelligence:
         if not app_def:
             return None
 
-        known_screens = list(app_def.screens.keys())
-        current_screen_name = current.screen_name if current else None
+        target_value = target_screen.value
 
         for path in app_def.navigation_paths:
-            if path.to_screen == target_screen.value:
+            if path.to_screen == target_value:
+                return [
+                    NavigationInstruction(
+                        step_type=step.get("action", "tap"),
+                        target=step.get("target", ""),
+                        description=step.get("description", f"Step: {step.get('action')}"),
+                        duration=1.0,
+                    )
+                    for step in path.steps
+                ]
+
+        target_stripped = target_value
+        for prefix in ["instagram_", "whatsapp_", "telegram_", "discord_", "messenger_",
+                        "youtube_", "gmail_", "chrome_", "twitter_", "linkedin_", "facebook_"]:
+            if target_value.startswith(prefix):
+                target_stripped = target_value[len(prefix):]
+                break
+
+        for path in app_def.navigation_paths:
+            if path.to_screen == target_stripped:
+                return [
+                    NavigationInstruction(
+                        step_type=step.get("action", "tap"),
+                        target=step.get("target", ""),
+                        description=step.get("description", f"Step: {step.get('action')}"),
+                        duration=1.0,
+                    )
+                    for step in path.steps
+                ]
+
+        for path in app_def.navigation_paths:
+            if path.to_screen in target_value or target_value.endswith(path.to_screen):
                 return [
                     NavigationInstruction(
                         step_type=step.get("action", "tap"),
@@ -220,10 +413,11 @@ class NavigationIntelligence:
         recipient: str,
         message: str,
     ) -> NavigationPath:
-        current = self._phone_memory.get_current_screen(device_id)
-        instructions: List[NavigationInstruction] = []
+        """Plan message sending - just returns basic open app instruction.
+        The actual smart flow is handled by execute_smart_message."""
+        instructions = []
 
-        if not current or current.app_name != app:
+        if not self._phone_memory.get_current_screen(device_id):
             instructions.append(NavigationInstruction(
                 step_type=NavigationStepType.OPEN_APP, target=app,
                 description=f"Open {app}",
@@ -233,48 +427,185 @@ class NavigationIntelligence:
                 description="Wait for app to load",
             ))
 
-        instructions.append(NavigationInstruction(
-            step_type=NavigationStepType.TAP, target="search",
-            description=f"Tap search to find {recipient}",
-            confidence=0.7,
-        ))
-        instructions.append(NavigationInstruction(
-            step_type=NavigationStepType.TYPE_TEXT, text=recipient,
-            description=f"Type {recipient}",
-        ))
-        instructions.append(NavigationInstruction(
-            step_type=NavigationStepType.WAIT, duration=2.0,
-            description="Wait for search results",
-        ))
-        instructions.append(NavigationInstruction(
-            step_type=NavigationStepType.TAP, target=recipient,
-            description=f"Tap on {recipient} chat",
-            confidence=0.6,
-        ))
-        instructions.append(NavigationInstruction(
-            step_type=NavigationStepType.WAIT, duration=2.0,
-            description="Wait for chat to open",
-        ))
-        instructions.append(NavigationInstruction(
-            step_type=NavigationStepType.TYPE_TEXT, text=message,
-            description=f"Type message: {message[:30]}",
-        ))
-        instructions.append(NavigationInstruction(
-            step_type=NavigationStepType.TAP, target="Send",
-            description="Tap Send button",
-        ))
-        instructions.append(NavigationInstruction(
-            step_type=NavigationStepType.WAIT, duration=1.0,
-            description="Wait for message to send",
-        ))
-
         return NavigationPath(
             target_screen=f"{app}_chat",
             target_app=app,
             instructions=instructions,
             total_steps=len(instructions),
-            confidence=0.6,
+            confidence=0.5,
         )
+
+    async def execute_smart_message(
+        self,
+        device_id: str,
+        app: str,
+        recipient: str,
+        message: str,
+    ) -> Dict[str, Any]:
+        """Smart message execution that analyzes screen at each step."""
+        adb = None
+        try:
+            from services.adb_service import get_adb_service, find_adb_binary
+            adb = get_adb_service(find_adb_binary())
+        except Exception as e:
+            logger.error(f"Failed to get ADB service: {e}")
+            return {"success": False, "error": f"ADB service unavailable: {e}"}
+
+        executed = []
+        max_attempts = 5
+
+        for attempt in range(max_attempts):
+            try:
+                logger.info(f"=== Smart message attempt {attempt + 1}/{max_attempts} ===")
+                analysis = await self.analyze_screen(device_id)
+                logger.info(f"Screen: app={analysis.app_name}, search={analysis.has_search_bar}, "
+                           f"input={analysis.has_message_input}, send={analysis.has_send_button}, "
+                           f"chat_list={analysis.has_chat_list}")
+
+                # CASE 1: Not in the right app - open it
+                if analysis.app_name != app:
+                    logger.info(f"Not in {app} (in {analysis.app_name or 'unknown'}), opening it...")
+                    await adb.open_app(device_id, app)
+                    await asyncio.sleep(4)
+                    executed.append({"step": "open_app", "target": app, "success": True})
+                    continue
+
+                # CASE 2: Has message input - we're in a chat, type and send
+                if analysis.has_message_input:
+                    logger.info("In chat! Typing message...")
+                    # Tap message input
+                    input_coords = None
+                    for variant in ["type a message", "Type a message", "message", "Message"]:
+                        input_coords = await self.find_element_on_screen(device_id, variant, skip_input_area=True)
+                        if input_coords:
+                            break
+                    if not input_coords:
+                        # Fallback: bottom center
+                        input_coords = (analysis.image_width // 2, int(analysis.image_height * 0.92))
+
+                    await adb.input_tap(device_id, input_coords[0], input_coords[1])
+                    await asyncio.sleep(1.5)
+                    executed.append({"step": "tap", "target": "message_input", "x": input_coords[0], "y": input_coords[1], "success": True})
+
+                    # Type message
+                    await adb.input_text(device_id, message)
+                    await asyncio.sleep(2)
+                    executed.append({"step": "type_text", "text": message[:30], "success": True})
+
+                    # Find and tap send
+                    send_coords = None
+                    for variant in ["send", "Send", "➤", "↑", "✈", "→"]:
+                        send_coords = await self.find_element_on_screen(device_id, variant)
+                        if send_coords:
+                            break
+                    if not send_coords:
+                        # Fallback: bottom right
+                        send_coords = (int(analysis.image_width * 0.9), int(analysis.image_height * 0.95))
+
+                    await adb.input_tap(device_id, send_coords[0], send_coords[1])
+                    await asyncio.sleep(2)
+                    executed.append({"step": "tap", "target": "send", "x": send_coords[0], "y": send_coords[1], "success": True})
+
+                    # Verify
+                    final = await self.analyze_screen(device_id)
+                    message_sent = message.lower() in final.ocr_text.lower()
+                    return {"success": message_sent, "device_id": device_id, "app": app,
+                            "recipient": recipient, "message": message, "executed": executed,
+                            "message_verified": message_sent}
+
+                # CASE 3: Has search bar - search for recipient
+                if analysis.has_search_bar:
+                    # Check if we already typed the recipient name
+                    recipient_typed = recipient.lower() in analysis.ocr_text.lower()
+
+                    if not recipient_typed:
+                        logger.info("Tapping search bar...")
+                        search_coords = await self.find_element_on_screen(device_id, "search")
+                        if search_coords:
+                            await adb.input_tap(device_id, search_coords[0], search_coords[1])
+                            await asyncio.sleep(2)
+                            executed.append({"step": "tap", "target": "search", "success": True})
+
+                        logger.info(f"Typing recipient: {recipient}")
+                        await adb.input_text(device_id, recipient)
+                        await asyncio.sleep(4)
+                        executed.append({"step": "type_text", "text": recipient, "success": True})
+                    else:
+                        logger.info(f"Recipient '{recipient}' already typed, looking for contact...")
+
+                    # Now find and tap the recipient in search results
+                    logger.info(f"Looking for '{recipient}' in search results...")
+                    recipient_coords = await self.find_element_on_screen(
+                        device_id, recipient, skip_input_area=True, search_results_mode=True
+                    )
+
+                    if not recipient_coords:
+                        # Try without search results mode
+                        recipient_coords = await self.find_element_on_screen(
+                            device_id, recipient, skip_input_area=True
+                        )
+
+                    if not recipient_coords:
+                        # Try finding any clickable element below search bar
+                        logger.info("Trying to find contact by UI elements...")
+                        analysis2 = await self.analyze_screen(device_id)
+                        for elem in analysis2.elements:
+                            if elem.y > analysis2.image_height * 0.15:
+                                elem_text = (elem.text or elem.label or "").lower()
+                                if recipient.lower() in elem_text:
+                                    recipient_coords = elem.center()
+                                    break
+
+                    if recipient_coords:
+                        logger.info(f"Found recipient at {recipient_coords}, tapping...")
+                        await adb.input_tap(device_id, recipient_coords[0], recipient_coords[1])
+                        await asyncio.sleep(3)
+                        executed.append({"step": "tap", "target": recipient, "x": recipient_coords[0], "y": recipient_coords[1], "success": True})
+                    else:
+                        logger.warning(f"Could not find '{recipient}' in search results, retrying...")
+                        await asyncio.sleep(2)
+                        continue
+
+                    continue
+
+                # CASE 4: Has send button but no message input - might be in chat list
+                if analysis.has_send_button and not analysis.has_message_input:
+                    logger.info("Has send button but no input, might need to go back...")
+                    await adb.press_back(device_id)
+                    await asyncio.sleep(1)
+                    executed.append({"step": "press_key", "keycode": "KEYCODE_BACK", "success": True})
+                    continue
+
+                # CASE 5: Chat list without search bar visible - look for search or scroll
+                if analysis.has_chat_list:
+                    logger.info("In chat list, looking for search...")
+                    search_coords = await self.find_element_on_screen(device_id, "search")
+                    if search_coords:
+                        await adb.input_tap(device_id, search_coords[0], search_coords[1])
+                        await asyncio.sleep(2)
+                        executed.append({"step": "tap", "target": "search", "success": True})
+                        continue
+
+                # CASE 6: Unknown state - go back
+                logger.info(f"Unknown state, going back... (OCR: {analysis.ocr_text[:100]})")
+                await adb.press_back(device_id)
+                await asyncio.sleep(1)
+                executed.append({"step": "press_key", "keycode": "KEYCODE_BACK", "success": True})
+
+            except Exception as e:
+                logger.error(f"Smart message attempt {attempt + 1} failed: {e}")
+                executed.append({"step": "error", "error": str(e)})
+                await asyncio.sleep(2)
+
+        return {
+            "success": False,
+            "device_id": device_id,
+            "app": app,
+            "recipient": recipient,
+            "message": message,
+            "executed": executed,
+            "error": "Failed after all attempts",
+        }
 
     def plan_reply(self, device_id: str, message: str) -> NavigationPath:
         current = self._phone_memory.get_current_screen(device_id)
@@ -286,11 +617,23 @@ class NavigationIntelligence:
             ScreenType.MESSENGER_CHAT,
         ):
             instructions.append(NavigationInstruction(
+                step_type=NavigationStepType.TAP, target="message",
+                description="Tap message input field",
+            ))
+            instructions.append(NavigationInstruction(
+                step_type=NavigationStepType.WAIT, duration=1.0,
+                description="Wait for input to be ready",
+            ))
+            instructions.append(NavigationInstruction(
                 step_type=NavigationStepType.TYPE_TEXT, text=message,
                 description=f"Type reply: {message[:30]}",
             ))
             instructions.append(NavigationInstruction(
-                step_type=NavigationStepType.TAP, target="Send",
+                step_type=NavigationStepType.WAIT, duration=1.0,
+                description="Wait for message to be typed",
+            ))
+            instructions.append(NavigationInstruction(
+                step_type=NavigationStepType.TAP, target="send",
                 description="Tap Send button",
             ))
             confidence = 0.8
@@ -300,11 +643,19 @@ class NavigationIntelligence:
                 description="Attempt reply in current context",
             ))
             instructions.append(NavigationInstruction(
+                step_type=NavigationStepType.TAP, target="message",
+                description="Tap message input field",
+            ))
+            instructions.append(NavigationInstruction(
+                step_type=NavigationStepType.WAIT, duration=1.0,
+                description="Wait for input to be ready",
+            ))
+            instructions.append(NavigationInstruction(
                 step_type=NavigationStepType.TYPE_TEXT, text=message,
                 description=f"Type: {message[:30]}",
             ))
             instructions.append(NavigationInstruction(
-                step_type=NavigationStepType.TAP, target="Send",
+                step_type=NavigationStepType.TAP, target="send",
                 description="Tap Send",
             ))
             confidence = 0.4
@@ -316,6 +667,189 @@ class NavigationIntelligence:
             total_steps=len(instructions),
             confidence=confidence,
         )
+
+    async def find_element_on_screen(
+        self,
+        device_id: str,
+        target: str,
+        skip_input_area: bool = False,
+        search_results_mode: bool = False,
+        retry_count: int = 2,
+    ) -> Optional[Tuple[int, int]]:
+        """Find element coordinates on screen with maximum accuracy."""
+        for attempt in range(retry_count):
+            try:
+                coords = await self._find_element_single_attempt(
+                    device_id, target, skip_input_area, search_results_mode
+                )
+                if coords:
+                    return coords
+                if attempt < retry_count - 1:
+                    logger.info(f"Retry {attempt + 2}/{retry_count} for '{target}'...")
+                    await asyncio.sleep(1.5)
+            except Exception as e:
+                logger.error(f"Find element attempt {attempt + 1} failed for '{target}': {e}")
+                if attempt < retry_count - 1:
+                    await asyncio.sleep(1.5)
+        return None
+
+    async def _find_element_single_attempt(
+        self,
+        device_id: str,
+        target: str,
+        skip_input_area: bool = False,
+        search_results_mode: bool = False,
+    ) -> Optional[Tuple[int, int]]:
+        """Single attempt to find element on screen."""
+        capture = self._capture
+        result = await capture.capture_from_adb(device_id)
+        if not result.success or result.image is None:
+            return None
+
+        h, w = result.image.shape[:2]
+        ocr_result = await self._ocr.extract_text(result.image)
+        target_lower = target.lower().strip()
+
+        logger.info(f"[Attempt] Looking for '{target}' in {len(ocr_result.texts)} text elements")
+
+        input_area_bottom = 0
+        if skip_input_area:
+            for dt in ocr_result.texts:
+                text_lower = dt.text.lower().strip()
+                if any(kw in text_lower for kw in ["search", "find", "🔍", "type a message", "message"]):
+                    input_area_bottom = max(input_area_bottom, dt.y + dt.h + 30)
+            if input_area_bottom == 0:
+                input_area_bottom = int(h * 0.18)
+
+        if search_results_mode:
+            contact_candidates = []
+            for dt in ocr_result.texts:
+                dt_lower = dt.text.lower().strip()
+                if len(dt.text) < 2:
+                    continue
+                if skip_input_area and dt.y < input_area_bottom:
+                    continue
+                if dt.x > w * 0.05 and dt.x < w * 0.85:
+                    if target_lower in dt_lower or dt_lower in target_lower:
+                        contact_candidates.append((dt, dt.y))
+                    words = dt.text.split()
+                    if any(target_lower in word.lower() for word in words if len(word) > 2):
+                        contact_candidates.append((dt, dt.y))
+
+            if contact_candidates:
+                contact_candidates.sort(key=lambda x: x[1], reverse=True)
+                best = contact_candidates[0][0]
+                coords = (best.x + best.w // 2, best.y + best.h // 2)
+                logger.info(f"Found contact '{target}' at {coords} (search results mode)")
+                return coords
+
+        for dt in ocr_result.texts:
+            if skip_input_area and dt.y < input_area_bottom:
+                continue
+            if dt.text.lower().strip() == target_lower:
+                coords = (dt.x + dt.w // 2, dt.y + dt.h // 2)
+                logger.info(f"Found exact match '{target}' at {coords}")
+                return coords
+
+        for dt in ocr_result.texts:
+            if skip_input_area and dt.y < input_area_bottom:
+                continue
+            dt_lower = dt.text.lower().strip()
+            if target_lower in dt_lower or dt_lower in target_lower:
+                coords = (dt.x + dt.w // 2, dt.y + dt.h // 2)
+                logger.info(f"Found partial match '{target}' in '{dt.text}' at {coords}")
+                return coords
+
+        for dt in ocr_result.texts:
+            if skip_input_area and dt.y < input_area_bottom:
+                continue
+            words = dt.text.lower().split()
+            if any(target_lower in word or word in target_lower for word in words if len(word) > 2):
+                coords = (dt.x + dt.w // 2, dt.y + dt.h // 2)
+                logger.info(f"Found word match '{target}' in '{dt.text}' at {coords}")
+                return coords
+
+        ui_result = await self._ui_detector.detect_elements(result.image)
+        for elem in ui_result.elements:
+            if skip_input_area and elem.y < input_area_bottom:
+                continue
+            elem_text = (elem.text or elem.label or "").lower().strip()
+            if target_lower in elem_text or elem_text in target_lower:
+                logger.info(f"Found UI element '{target}' at {elem.center()}")
+                return elem.center()
+            elem_words = elem_text.split()
+            if any(target_lower in word or word in target_lower for word in elem_words if len(word) > 2):
+                logger.info(f"Found UI element word match '{target}' at {elem.center()}")
+                return elem.center()
+            if target_lower in ("message", "input", "type", "type a message") and elem.element_type == "input":
+                logger.info(f"Found input element at {elem.center()}")
+                return elem.center()
+            if target_lower in ("send", "send button") and elem.element_type == "button":
+                btn_text = (elem.text or elem.label or "").lower()
+                if "send" in btn_text or "➤" in btn_text or "↑" in btn_text:
+                    logger.info(f"Found send button at {elem.center()}")
+                    return elem.center()
+
+        common_elements = {
+            "send": ["send", "send ", "➤", "↑", "✈", "→", "paper plane"],
+            "search": ["search", "🔍"],
+            "back": ["back", "←", "‹"],
+            "menu": ["menu", "⋮", "•••", "⋯"],
+            "close": ["close", "×", "✕"],
+            "ok": ["ok", "okay", "done"],
+            "cancel": ["cancel"],
+            "next": ["next", "→"],
+        }
+        if target_lower in common_elements:
+            for keyword in common_elements[target_lower]:
+                for dt in ocr_result.texts:
+                    if skip_input_area and dt.y < input_area_bottom:
+                        continue
+                    if keyword in dt.text.lower():
+                        coords = (dt.x + dt.w // 2, dt.y + dt.h // 2)
+                        logger.info(f"Found common element '{target}' via keyword '{keyword}' at {coords}")
+                        return coords
+                for elem in ui_result.elements:
+                    if skip_input_area and elem.y < input_area_bottom:
+                        continue
+                    elem_text = (elem.text or elem.label or "").lower()
+                    if keyword in elem_text:
+                        logger.info(f"Found common UI element '{target}' at {elem.center()}")
+                        return elem.center()
+
+            if target_lower == "send":
+                send_candidates = []
+                for elem in ui_result.elements:
+                    if elem.element_type == "button":
+                        if elem.x > w * 0.8 and elem.y > h * 0.8:
+                            send_candidates.append(elem)
+                if send_candidates:
+                    best = max(send_candidates, key=lambda e: e.x)
+                    logger.info(f"Found send button by position at {best.center()}")
+                    return best.center()
+
+                for elem in ui_result.elements:
+                    if elem.element_type == "input":
+                        send_x = elem.x + elem.w + 50
+                        send_y = elem.y + elem.h // 2
+                        if send_x < w and send_y < h:
+                            logger.info(f"Found send button by input field at ({send_x}, {send_y})")
+                            return (send_x, send_y)
+
+                for elem in ui_result.elements:
+                    if elem.element_type == "button" and elem.y > h * 0.85:
+                        logger.info(f"Found button near bottom at {elem.center()}")
+                        return elem.center()
+
+        for dt in ocr_result.texts:
+            dt_lower = dt.text.lower().strip()
+            if target_lower in dt_lower or dt_lower in target_lower:
+                coords = (dt.x + dt.w // 2, dt.y + dt.h // 2)
+                logger.info(f"Found fallback match '{target}' at {coords}")
+                return coords
+
+        logger.warning(f"Element '{target}' not found on screen")
+        return None
 
     def format_instructions_for_adb(self, instructions: List[NavigationInstruction]) -> List[dict]:
         adb_steps = []

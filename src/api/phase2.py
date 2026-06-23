@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
+import asyncio
 
 from console.event_stream import get_event_manager, EventType, EventSeverity
 
@@ -53,8 +54,10 @@ class NavigationPlanRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     device_id: Optional[str] = None
     app: str = "whatsapp"
-    recipient: str
-    message: str
+    recipient: Optional[str] = None
+    message: Optional[str] = None
+    target_screen: Optional[str] = None
+    target_app: Optional[str] = None
 
 
 class ReplyRequest(BaseModel):
@@ -406,10 +409,13 @@ async def navigation_plan(request: NavigationPlanRequest) -> Dict[str, Any]:
         target_type = ScreenType.UNKNOWN
 
     nav = get_navigation_intelligence()
-    path = nav.plan_path_to_screen(request.device_id, target_type, request.target_app)
+    path = nav.plan_path_to_screen(request.device_id, target_type, request.target_app, raw_target=request.target_screen)
+
+    # Derive target_app if not provided
+    effective_app = request.target_app or nav._derive_app_from_screen(target_type)
 
     # If screen was unknown, still provide fallback instructions
-    if target_type == ScreenType.UNKNOWN and not path.instructions and request.target_app:
+    if target_type == ScreenType.UNKNOWN and not path.instructions and effective_app:
         from navigation.navigation_intelligence import NavigationInstruction, NavigationStepType
         path.instructions = [
             NavigationInstruction(
@@ -453,10 +459,12 @@ async def navigation_execute(request: NavigationPlanRequest) -> Dict[str, Any]:
         return {"success": False, "error": "No Android device connected via ADB"}
 
     nav = get_navigation_intelligence()
-    path = nav.plan_path_to_screen(real_device, target_type, request.target_app)
+    path = nav.plan_path_to_screen(real_device, target_type, request.target_app, raw_target=request.target_screen)
+
+    effective_app = request.target_app or nav._derive_app_from_screen(target_type)
 
     # Add fallback instructions for unknown screen types
-    if target_type == ScreenType.UNKNOWN and not path.instructions and request.target_app:
+    if target_type == ScreenType.UNKNOWN and not path.instructions and effective_app:
         from navigation.navigation_intelligence import NavigationInstruction, NavigationStepType
         path.instructions = [
             NavigationInstruction(
@@ -488,36 +496,49 @@ async def navigation_execute(request: NavigationPlanRequest) -> Dict[str, Any]:
         try:
             if inst.step_type == "open_app":
                 await adb.open_app(real_device, inst.target)
+                await asyncio.sleep(3)
                 executed.append({"step": inst.step_type, "target": inst.target, "success": True})
             elif inst.step_type == "wait":
-                import asyncio
                 await asyncio.sleep(inst.duration)
                 executed.append({"step": inst.step_type, "duration": inst.duration, "success": True})
             elif inst.step_type == "press_key":
                 key_map = {"KEYCODE_BACK": 4, "KEYCODE_HOME": 3, "KEYCODE_ENTER": 66}
                 keycode = key_map.get(inst.keycode, 4)
                 await adb.press_key(real_device, keycode)
+                await asyncio.sleep(1)
                 executed.append({"step": inst.step_type, "keycode": inst.keycode, "success": True})
             elif inst.step_type == "tap":
+                coords = None
                 if inst.x > 0 and inst.y > 0:
-                    await adb.input_tap(real_device, inst.x, inst.y)
-                executed.append({"step": inst.step_type, "target": inst.target, "success": True})
+                    coords = (inst.x, inst.y)
+                else:
+                    coords = await nav.find_element_on_screen(real_device, inst.target)
+                if coords:
+                    await adb.input_tap(real_device, coords[0], coords[1])
+                    await asyncio.sleep(2)
+                    executed.append({"step": inst.step_type, "target": inst.target, "x": coords[0], "y": coords[1], "success": True})
+                else:
+                    executed.append({"step": inst.step_type, "target": inst.target, "success": False, "error": f"Element '{inst.target}' not found"})
             elif inst.step_type == "type_text":
                 if inst.text:
                     await adb.input_text(real_device, inst.text)
-                executed.append({"step": inst.step_type, "text": inst.text[:20], "success": True})
+                    await asyncio.sleep(1)
+                executed.append({"step": inst.step_type, "text": inst.text[:30] if inst.text else "", "success": True})
             elif inst.step_type == "swipe":
                 direction = inst.params.get("direction", "down") if inst.params else "down"
                 if direction == "down":
                     await adb.shell(real_device, "input swipe 500 1000 500 200")
                 elif direction == "up":
                     await adb.shell(real_device, "input swipe 500 200 500 1000")
+                await asyncio.sleep(1)
                 executed.append({"step": inst.step_type, "direction": direction, "success": True})
             elif inst.step_type == "go_back":
                 await adb.press_back(real_device)
+                await asyncio.sleep(1)
                 executed.append({"step": inst.step_type, "success": True})
             elif inst.step_type == "go_home":
                 await adb.press_home(real_device)
+                await asyncio.sleep(1)
                 executed.append({"step": inst.step_type, "success": True})
             elif inst.step_type == "launch_activity":
                 if inst.target and inst.activity:
@@ -586,6 +607,81 @@ async def messages_send(request: SendMessageRequest) -> Dict[str, Any]:
     if not real_device:
         return {"success": False, "error": "No Android device connected via ADB"}
 
+    # Navigation-only mode: just navigate to target_screen without sending a message
+    if request.target_screen and not request.recipient and not request.message:
+        try:
+            target_type = ScreenType(request.target_screen)
+        except ValueError:
+            target_type = ScreenType.UNKNOWN
+
+        nav = get_navigation_intelligence()
+        # Resolve UNKNOWN to closest match using raw string
+        if target_type == ScreenType.UNKNOWN:
+            target_screen_str = request.target_screen.lower().strip()
+            # Try to find app name and screen from the raw string
+            app_keywords = {
+                "instagram": "instagram", "whatsapp": "whatsapp", "telegram": "telegram",
+                "discord": "discord", "messenger": "messenger", "youtube": "youtube",
+                "gmail": "gmail", "chrome": "chrome", "twitter": "twitter",
+                "linkedin": "linkedin", "facebook": "facebook", "spotify": "spotify",
+                "settings": "settings", "phone": "phone", "maps": "maps",
+            }
+            for keyword, app_name in app_keywords.items():
+                if keyword in target_screen_str:
+                    request.target_app = request.target_app or app_name
+                    break
+
+        path = nav.plan_path_to_screen(real_device, target_type, request.target_app, raw_target=request.target_screen)
+
+        adb = get_adb_service(find_adb_binary())
+        executed = []
+        for inst in path.instructions:
+            try:
+                if inst.step_type == "open_app":
+                    await adb.open_app(real_device, inst.target)
+                    await asyncio.sleep(3)
+                    executed.append({"step": "open_app", "target": inst.target, "success": True})
+                elif inst.step_type == "wait":
+                    await asyncio.sleep(inst.duration)
+                    executed.append({"step": "wait", "duration": inst.duration, "success": True})
+                elif inst.step_type == "tap":
+                    coords = None
+                    if inst.x > 0 and inst.y > 0:
+                        coords = (inst.x, inst.y)
+                    else:
+                        coords = await nav.find_element_on_screen(real_device, inst.target)
+                    if coords:
+                        await adb.input_tap(real_device, coords[0], coords[1])
+                        await asyncio.sleep(2)
+                        executed.append({"step": "tap", "target": inst.target, "x": coords[0], "y": coords[1], "success": True})
+                    else:
+                        executed.append({"step": "tap", "target": inst.target, "success": False, "error": f"Element '{inst.target}' not found"})
+                elif inst.step_type == "press_key":
+                    key_map = {"KEYCODE_BACK": 4, "KEYCODE_HOME": 3, "KEYCODE_ENTER": 66}
+                    keycode = key_map.get(inst.keycode, 4)
+                    await adb.press_key(real_device, keycode)
+                    await asyncio.sleep(1)
+                    executed.append({"step": "press_key", "keycode": inst.keycode, "success": True})
+                else:
+                    executed.append({"step": inst.step_type, "note": "not implemented", "success": True})
+            except Exception as e:
+                executed.append({"step": inst.step_type, "success": False, "error": str(e)})
+
+        all_ok = all(e.get("success", False) for e in executed)
+
+        return {
+            "success": all_ok,
+            "device_id": real_device,
+            "mode": "navigation",
+            "target_screen": request.target_screen,
+            "plan": {"steps": len(path.instructions), "confidence": path.confidence},
+            "executed": executed,
+        }
+
+    # Message-sending mode: requires recipient and message
+    if not request.recipient or not request.message:
+        return {"success": False, "error": "Provide either target_screen for navigation, or recipient+message to send"}
+
     event_manager = get_event_manager()
     await event_manager.emit(
         workflow_id="phase2", event_type=EventType.MESSAGE_SENT,
@@ -595,56 +691,29 @@ async def messages_send(request: SendMessageRequest) -> Dict[str, Any]:
     )
 
     nav = get_navigation_intelligence()
-    path = nav.plan_send_message(real_device, request.app, request.recipient, request.message)
-    adb = get_adb_service(find_adb_binary())
 
-    executed = []
-    for inst in path.instructions:
-        try:
-            if inst.step_type == "open_app":
-                await adb.open_app(real_device, inst.target)
-                executed.append({"step": "open_app", "target": inst.target, "success": True})
-            elif inst.step_type == "wait":
-                import asyncio
-                await asyncio.sleep(inst.duration)
-                executed.append({"step": "wait", "duration": inst.duration, "success": True})
-            elif inst.step_type == "type_text":
-                await adb.input_text(real_device, inst.text)
-                executed.append({"step": "type_text", "text": inst.text[:20], "success": True})
-            elif inst.step_type == "tap":
-                if inst.x > 0 and inst.y > 0:
-                    await adb.input_tap(real_device, inst.x, inst.y)
-                executed.append({"step": "tap", "target": inst.target, "success": True})
-            else:
-                executed.append({"step": inst.step_type, "note": "not implemented via ADB", "success": True})
-        except Exception as e:
-            executed.append({"step": inst.step_type, "success": False, "error": str(e)})
+    # Use smart execution that analyzes screen at each step
+    result = await nav.execute_smart_message(
+        real_device, request.app, request.recipient, request.message
+    )
 
-    # Verify message was actually sent via OCR
-    message_verified = False
-    try:
-        await asyncio.sleep(1)
-        capture_result = await get_screen_capture_service().capture_from_adb(real_device)
-        if capture_result.success and capture_result.image:
-            ocr_result = await get_ocr_service().extract_text(capture_result.image)
-            if request.message and request.message.lower() in ocr_result.full_text.lower():
-                message_verified = True
-            elif len(ocr_result.texts) > 0:
-                message_verified = True
-    except Exception:
-        pass
-
-    all_exec_success = all(e.get("success", False) for e in executed)
+    await event_manager.emit(
+        workflow_id="phase2", event_type=EventType.MESSAGE_SENT,
+        payload={"device_id": real_device, "app": request.app, "recipient": request.recipient,
+                 "message": request.message, "success": result.get("success", False)},
+        source="phase2_api", severity=EventSeverity.INFO if result.get("success") else EventSeverity.WARNING,
+        device_id=real_device,
+    )
 
     return {
-        "success": all_exec_success and message_verified,
+        "success": result.get("success", False),
         "device_id": real_device,
-        "app": request.app, "recipient": request.recipient,
+        "app": request.app,
+        "recipient": request.recipient,
         "message": request.message,
-        "plan": {"steps": len(path.instructions), "confidence": path.confidence},
-        "executed": executed,
-        "message_verified": message_verified,
-        "verification": "passed" if message_verified else "failed",
+        "executed": result.get("executed", []),
+        "message_verified": result.get("message_verified", False),
+        "verification": "passed" if result.get("message_verified") else "failed",
         "instruction": f"send message to {request.recipient} on {request.app}",
     }
 
@@ -664,25 +733,60 @@ async def messages_reply(request: ReplyRequest) -> Dict[str, Any]:
         try:
             if inst.step_type == "type_text":
                 await adb.input_text(real_device, inst.text)
-                executed.append({"step": "type_text", "text": inst.text[:20], "success": True})
+                await asyncio.sleep(1)
+                executed.append({"step": "type_text", "text": inst.text[:30], "success": True})
             elif inst.step_type == "tap":
+                coords = None
                 if inst.x > 0 and inst.y > 0:
-                    await adb.input_tap(real_device, inst.x, inst.y)
-                executed.append({"step": "tap", "target": inst.target, "success": True})
+                    coords = (inst.x, inst.y)
+                else:
+                    # Special handling for message input
+                    if inst.target.lower() in ("message", "input", "type a message"):
+                        for variation in ["type a message", "message", "Type a message", "input"]:
+                            coords = await nav.find_element_on_screen(real_device, variation, skip_input_area=True)
+                            if coords:
+                                break
+                    # Special handling for send button
+                    elif inst.target.lower() in ("send", "send button"):
+                        for variation in ["send", "Send", "➤", "↑", "✈", "→"]:
+                            coords = await nav.find_element_on_screen(real_device, variation, skip_input_area=False)
+                            if coords:
+                                break
+                        # Fallback: find send button by position (bottom right)
+                        if not coords:
+                            try:
+                                capture_result = await get_screen_capture_service().capture_from_adb(real_device)
+                                if capture_result.success and capture_result.image:
+                                    img_h, img_w = capture_result.image.shape[:2]
+                                    send_x = int(img_w * 0.9)
+                                    send_y = int(img_h * 0.95)
+                                    coords = (send_x, send_y)
+                            except Exception:
+                                pass
+                    else:
+                        coords = await nav.find_element_on_screen(real_device, inst.target)
+                if coords:
+                    await adb.input_tap(real_device, coords[0], coords[1])
+                    await asyncio.sleep(2)
+                    executed.append({"step": "tap", "target": inst.target, "x": coords[0], "y": coords[1], "success": True})
+                else:
+                    executed.append({"step": "tap", "target": inst.target, "success": False, "error": f"Element '{inst.target}' not found on screen"})
             elif inst.step_type == "wait":
-                import asyncio
                 await asyncio.sleep(inst.duration)
                 executed.append({"step": "wait", "success": True})
             elif inst.step_type == "press_key":
                 key_map = {"KEYCODE_BACK": 4, "KEYCODE_HOME": 3, "KEYCODE_ENTER": 66}
                 keycode = key_map.get(inst.keycode, 4)
                 await adb.press_key(real_device, keycode)
+                await asyncio.sleep(0.5)
                 executed.append({"step": "press_key", "keycode": inst.keycode, "success": True})
             elif inst.step_type == "go_back":
                 await adb.press_back(real_device)
+                await asyncio.sleep(0.5)
                 executed.append({"step": "go_back", "success": True})
             elif inst.step_type == "go_home":
                 await adb.press_home(real_device)
+                await asyncio.sleep(0.5)
                 executed.append({"step": "go_home", "success": True})
             else:
                 executed.append({"step": inst.step_type, "success": False, "error": f"Unknown step type: {inst.step_type}"})

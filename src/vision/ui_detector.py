@@ -61,9 +61,9 @@ class UIDetectionResult:
 
 
 class UIDetector:
-    MIN_BUTTON_AREA = 300
+    MIN_BUTTON_AREA = 200
     MAX_BUTTON_AREA_RATIO = 0.3
-    MIN_INPUT_HEIGHT = 15
+    MIN_INPUT_HEIGHT = 10
     TAB_HEIGHT_RATIO = 0.06
     BOTTOM_BAR_RATIO = 0.1
 
@@ -88,27 +88,47 @@ class UIDetector:
         menus = self._detect_menus(buttons, h)
         images = self._detect_images(gray, w, h)
 
-        # Use UI element classification via OCR text hints
+        # Enhanced button detection from OCR text
         for dt in ocr_result.texts:
-            txt_lower = dt.text.lower()
+            txt_lower = dt.text.lower().strip()
             # Detect buttons from text that looks like buttons
-            if dt.h < h * 0.08 and dt.w > 30 and dt.h > 15:
-                is_button_text = any(kw in txt_lower for kw in
-                    ["send", "submit", "ok", "done", "next", "back", "cancel", "save",
-                     "share", "post", "comment", "like", "follow", "message", "call",
-                     "search", "open", "start", "stop", "delete", "edit", "create",
-                     "add", "remove", "update", "view", "close", "reply", "forward"])
+            if dt.h < h * 0.08 and dt.w > 20 and dt.h > 10:
+                button_keywords = [
+                    "send", "submit", "ok", "done", "next", "back", "cancel", "save",
+                    "share", "post", "comment", "like", "follow", "message", "call",
+                    "search", "open", "start", "stop", "delete", "edit", "create",
+                    "add", "remove", "update", "view", "close", "reply", "forward",
+                    "yes", "no", "confirm", "accept", "decline", "retry", "continue",
+                    "sign in", "log in", "login", "sign up", "register",
+                ]
+                is_button_text = any(kw in txt_lower for kw in button_keywords)
                 if is_button_text:
                     # Check if a button already exists near this text
                     nearby = [b for b in buttons if abs(b.x - dt.x) < 50 and abs(b.y - dt.y) < 30]
                     if not nearby:
                         buttons.append(DetectedUIElement(
                             element_type="button",
-                            x=max(0, dt.x - 5), y=max(0, dt.y - 5),
-                            w=dt.w + 10, h=dt.h + 10,
-                            confidence=dt.confidence * 0.8,
+                            x=max(0, dt.x - 10), y=max(0, dt.y - 5),
+                            w=dt.w + 20, h=dt.h + 10,
+                            confidence=dt.confidence * 0.9,
                             label=dt.text, text=dt.text,
                         ))
+
+        # Detect input fields from OCR hints
+        input_keywords = ["search", "type", "message", "enter", "input", "find", "email", "password"]
+        for dt in ocr_result.texts:
+            txt_lower = dt.text.lower().strip()
+            if any(kw in txt_lower for kw in input_keywords):
+                # Check if this looks like a placeholder text (usually lighter color, smaller)
+                nearby_inputs = [i for i in inputs if abs(i.x - dt.x) < 50 and abs(i.y - dt.y) < 30]
+                if not nearby_inputs and dt.w > 100:
+                    inputs.append(DetectedUIElement(
+                        element_type="input",
+                        x=max(0, dt.x - 10), y=max(0, dt.y - 5),
+                        w=dt.w + 20, h=dt.h + 10,
+                        confidence=dt.confidence * 0.7,
+                        label=dt.text, text=dt.text,
+                    ))
 
         all_elements = buttons + inputs + icons + tabs + menus + images + text_regions
 

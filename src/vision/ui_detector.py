@@ -88,14 +88,6 @@ class UIDetector:
         menus = self._detect_menus(buttons, h)
         images = self._detect_images(gray, w, h)
 
-        # Also detect via edge-based region detection for missing elements
-        all_elements = buttons + inputs + icons + tabs + menus + images + text_regions
-        edge_regions = self._detect_edge_regions(gray, ocr_result, w, h)
-        for er in edge_regions:
-            if not any(self._overlaps(er, e) for e in all_elements if hasattr(e, 'x')):
-                if er.element_type not in [e.element_type for e in all_elements]:
-                    pass  # edge_regions added if not overlapping
-
         # Use UI element classification via OCR text hints
         for dt in ocr_result.texts:
             txt_lower = dt.text.lower()

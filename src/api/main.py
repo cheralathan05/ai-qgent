@@ -49,6 +49,8 @@ from observability import get_metrics_collector, get_dashboard_manager
 from action_verification import get_action_verifier
 from plugin_framework import get_plugin_registry
 from plugin_framework.builtin_plugins import register_builtin_plugins
+from vision.screen_capture import get_screen_capture_service
+from vision.ocr_service import get_ocr_service
 
 logger = logging.getLogger(__name__)
 
@@ -283,27 +285,14 @@ async def _emit_event(workflow_id, event_type, payload, source="api", severity="
         pass
 
 
-async def _execute_user_command(
-    *,
-    session,
-    command: str,
-    user_id: Optional[str] = None,
-    device_id: Optional[str] = None,
-    voice_input: bool = False,
-    workflow_id: Optional[str] = None,
-    context: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Route user command through the intent pipeline and execute on the real device."""
-    orchestrator = get_workflow_engine(session=session)
-    resolved_user_id = user_id or DEFAULT_USER_ID
-    resolved_device_id = device_id or await _resolve_adb_device() or "7f0deaf6"
-
 async def _update_workflow_status(session, workflow_id: str, status: WorkflowStatus, result: Optional[Dict] = None, error: Optional[str] = None):
-    """Update workflow status in database."""
+    """Update workflow status in database using a fresh session to avoid stale state."""
     if not workflow_id:
         return
+    from database.connection import get_db_session
+    db = get_db_session()
     try:
-        workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
+        workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
         if workflow:
             workflow.status = status
             workflow.end_time = datetime.utcnow()
@@ -312,9 +301,12 @@ async def _update_workflow_status(session, workflow_id: str, status: WorkflowSta
                 workflow.result = result
             if error:
                 workflow.error = error
-            session.commit()
+            db.commit()
     except Exception as e:
         logger.warning(f"Failed to update workflow {workflow_id} status: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 async def _execute_user_command(
@@ -1487,11 +1479,51 @@ async def get_metrics(
 
 # Health check
 @app.get("/health", tags=["System"])
-async def health_check() -> Dict[str, str]:
-    return {
+async def health_check() -> Dict[str, Any]:
+    health = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
+        "components": {},
     }
+
+    # Check OCR engines
+    try:
+        from vision.ocr_service import get_ocr_service
+        ocr = get_ocr_service()
+        health["components"]["ocr"] = ocr.get_engine_status()
+    except Exception as e:
+        health["components"]["ocr"] = {"error": str(e), "available": False}
+
+    # Check ADB
+    try:
+        from services.adb_service import get_adb_service, find_adb_binary
+        adb_path = find_adb_binary()
+        adb = get_adb_service(adb_path)
+        devices = await adb.list_devices()
+        health["components"]["adb"] = {
+            "available": True,
+            "path": adb_path,
+            "connected_devices": len(devices),
+            "devices": [d["serial"] for d in devices],
+        }
+    except Exception as e:
+        health["components"]["adb"] = {"available": False, "error": str(e)}
+
+    # Overall status
+    ocr_ok = health["components"].get("ocr", {}).get("easyocr_available", False) or \
+             health["components"].get("ocr", {}).get("tesseract_available", False)
+    adb_ok = health["components"].get("adb", {}).get("connected_devices", 0) > 0
+
+    if not ocr_ok:
+        health["status"] = "degraded"
+        health["warnings"] = health.get("warnings", [])
+        health["warnings"].append("No OCR engines available")
+    if not adb_ok:
+        health["status"] = "degraded"
+        health["warnings"] = health.get("warnings", [])
+        health["warnings"].append("No Android device connected")
+
+    return health
 
 
 # ==================== Phase 1 Acceptance Tests ====================
@@ -1881,7 +1913,8 @@ async def refresh_apps() -> Dict[str, Any]:
 # Background task helper
 async def execute_workflow_background(workflow_id: str):
     """Execute workflow in background"""
-    db_session = next(get_session())
+    from database.connection import get_db_session
+    db_session = get_db_session()
     try:
         workflow = db_session.query(Workflow).filter(Workflow.id == workflow_id).first()
         if workflow is None:

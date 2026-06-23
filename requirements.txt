@@ -14,6 +14,12 @@ pydantic-settings==2.0.0
 python-dotenv==1.2.2
 openai-whisper==20231117
 
+# Phase 2 - Vision & OCR
+easyocr>=1.7.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
 # Phase 3 - Knowledge Intelligence
 chromadb>=0.4.0
 faiss-cpu>=1.7.0
@@ -24,4 +30,3 @@ python-pptx>=0.6.0
 python-docx>=1.1.0
 PyMuPDF>=1.23.0
 PyPDF2>=3.0.0
-numpy>=1.24.0

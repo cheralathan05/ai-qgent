@@ -453,8 +453,16 @@ class WorkflowOrchestrator:
                             severity=EventSeverity.INFO,
                         )
 
+                        # Get actual foreground app from ADB for proper classification
+                        foreground_app = None
+                        if self.adb is not None:
+                            try:
+                                foreground_app = await self.adb.get_foreground_app(device_id)
+                            except Exception:
+                                pass
+
                         # Classify screen via visual understanding layer
-                        screen_class = self.visual_understanding.classify_screen(new_screen)
+                        screen_class = self.visual_understanding.classify_screen(foreground_app or "")
                         await self.event_manager.emit(
                             workflow_id=workflow_id,
                             event_type=EventType.SCREEN_DETECTED,
@@ -948,6 +956,11 @@ class WorkflowOrchestrator:
 
             # Capture and classify screen after launch
             screen_info = await self._capture_and_classify_screen(device_id, workflow_id, emit_events=False)
+            if screen_info:
+                classification = screen_info.get("classification")
+                if classification:
+                    result["screen_type"] = classification.screen_type.value if hasattr(classification, 'screen_type') else None
+                    result["screen_app_name"] = classification.app_name if hasattr(classification, 'app_name') else None
             return result
 
         elif step_type == "send_message":
@@ -1017,7 +1030,7 @@ class WorkflowOrchestrator:
                     target_screen_type = st
                     break
             if target_screen_type is None and app_name:
-                target_screen_type = ScreenType.UNKNOWN_SCREEN
+                target_screen_type = ScreenType.UNKNOWN
 
             if target_screen_type:
                 path = self.nav_intelligence.plan_path_to_screen(device_id, target_screen_type, app_name)
@@ -1173,7 +1186,7 @@ class WorkflowOrchestrator:
                 result = await self.visual_verifier.verify_screen_changed(device_id)
             else:
                 result = await self.visual_verifier.verify_screen_type(device_id,
-                    next((st for st in ScreenType if st.value == expected), ScreenType.UNKNOWN_SCREEN),
+                    next((st for st in ScreenType if st.value == expected), ScreenType.UNKNOWN),
                     app)
 
             event_type = EventType.VISUAL_VERIFICATION_PASSED if result.passed else EventType.VISUAL_VERIFICATION_FAILED

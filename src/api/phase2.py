@@ -161,6 +161,10 @@ async def _capture_and_analyze(device_id: str, foreground_app: Optional[str] = N
             "text_count": len(ocr_result.texts),
             "texts": [{"text": t.text, "confidence": t.confidence, "x": t.x, "y": t.y, "w": t.w, "h": t.h}
                       for t in ocr_result.texts[:50]],
+            "success": ocr_result.success,
+            "engine_used": ocr_result.engine_used,
+            "processing_time_ms": ocr_result.processing_time_ms,
+            "error": ocr_result.error if not ocr_result.success else None,
         },
         "ui_elements": {
             "total": len(ui_result.elements),
@@ -221,13 +225,30 @@ async def screen_ocr(request: OCRRequest) -> Dict[str, Any]:
     if not capture.success or capture.image is None:
         return {"success": False, "error": capture.error}
     ocr = await get_ocr_service().extract_text(capture.image)
-    return {
-        "success": True, "device_id": real_device,
+
+    result = {
+        "device_id": real_device,
         "full_text": ocr.full_text,
         "texts": [{"text": t.text, "confidence": t.confidence, "x": t.x, "y": t.y, "w": t.w, "h": t.h}
                   for t in ocr.texts],
         "text_count": len(ocr.texts),
+        "image_width": capture.width,
+        "image_height": capture.height,
+        "engine_used": ocr.engine_used,
+        "processing_time_ms": ocr.processing_time_ms,
     }
+
+    if not ocr.success or len(ocr.texts) == 0:
+        result["success"] = False
+        result["error"] = ocr.error or "No text detected"
+        logger.warning(
+            f"OCR returned no text for device={real_device} "
+            f"image={capture.width}x{capture.height} engine={ocr.engine_used}"
+        )
+    else:
+        result["success"] = True
+
+    return result
 
 
 @router.get("/screen/current")

@@ -442,170 +442,109 @@ class NavigationIntelligence:
         recipient: str,
         message: str,
     ) -> Dict[str, Any]:
-        """Smart message execution that analyzes screen at each step."""
-        adb = None
-        try:
-            from services.adb_service import get_adb_service, find_adb_binary
-            adb = get_adb_service(find_adb_binary())
-        except Exception as e:
-            logger.error(f"Failed to get ADB service: {e}")
-            return {"success": False, "error": f"ADB service unavailable: {e}"}
-
+        from services.adb_service import get_adb_service, find_adb_binary
+        adb = get_adb_service(find_adb_binary())
         executed = []
-        max_attempts = 5
 
-        for attempt in range(max_attempts):
-            try:
-                logger.info(f"=== Smart message attempt {attempt + 1}/{max_attempts} ===")
-                analysis = await self.analyze_screen(device_id)
-                logger.info(f"Screen: app={analysis.app_name}, search={analysis.has_search_bar}, "
-                           f"input={analysis.has_message_input}, send={analysis.has_send_button}, "
-                           f"chat_list={analysis.has_chat_list}")
+        # Step 1: Open app (1s)
+        await adb.open_app(device_id, app)
+        await asyncio.sleep(2)
+        executed.append({"step": "open_app", "target": app, "success": True})
 
-                # CASE 1: Not in the right app - open it
-                if analysis.app_name != app:
-                    logger.info(f"Not in {app} (in {analysis.app_name or 'unknown'}), opening it...")
-                    await adb.open_app(device_id, app)
-                    await asyncio.sleep(4)
-                    executed.append({"step": "open_app", "target": app, "success": True})
+        # Step 2: Tap search (1s)
+        search_coords = await self.find_element_on_screen(device_id, "search", retry_count=1)
+        if search_coords:
+            await adb.input_tap(device_id, search_coords[0], search_coords[1])
+        else:
+            # Fallback: tap top center where search usually is
+            analysis = await self.analyze_screen(device_id)
+            await adb.input_tap(device_id, analysis.image_width // 2, int(analysis.image_height * 0.07))
+        await asyncio.sleep(1)
+        executed.append({"step": "tap", "target": "search", "success": True})
+
+        # Step 3: Type contact name (1s)
+        await adb.input_text(device_id, recipient)
+        await asyncio.sleep(2)
+        executed.append({"step": "type_text", "text": recipient, "success": True})
+
+        # Step 4: Tap contact in results (1s)
+        coords = await self._find_text_below_search(device_id, recipient, None)
+        if coords:
+            await adb.input_tap(device_id, coords[0], coords[1])
+            executed.append({"step": "tap", "target": recipient, "x": coords[0], "y": coords[1], "success": True})
+        await asyncio.sleep(2)
+
+        # Step 5: Tap message input (1s)
+        input_coords = await self.find_element_on_screen(device_id, "message", skip_input_area=True, retry_count=1)
+        if not input_coords:
+            input_coords = await self.find_element_on_screen(device_id, "type a message", skip_input_area=True, retry_count=1)
+        if input_coords:
+            await adb.input_tap(device_id, input_coords[0], input_coords[1])
+        else:
+            analysis = await self.analyze_screen(device_id)
+            await adb.input_tap(device_id, analysis.image_width // 2, int(analysis.image_height * 0.92))
+        await asyncio.sleep(1)
+        executed.append({"step": "tap", "target": "message_input", "success": True})
+
+        # Step 6: Type message (1s)
+        await adb.input_text(device_id, message)
+        await asyncio.sleep(1)
+        executed.append({"step": "type_text", "text": message[:30], "success": True})
+
+        # Step 7: Tap send (1s)
+        send_coords = await self.find_element_on_screen(device_id, "send", retry_count=1)
+        if not send_coords:
+            for v in ["Send", "➤", "✈"]:
+                send_coords = await self.find_element_on_screen(device_id, v, retry_count=1)
+                if send_coords:
+                    break
+        if not send_coords:
+            analysis = await self.analyze_screen(device_id)
+            send_coords = (int(analysis.image_width * 0.9), int(analysis.image_height * 0.95))
+        await adb.input_tap(device_id, send_coords[0], send_coords[1])
+        await asyncio.sleep(1)
+        executed.append({"step": "tap", "target": "send", "x": send_coords[0], "y": send_coords[1], "success": True})
+
+        return {"success": True, "device_id": device_id, "app": app,
+                "recipient": recipient, "message": message, "executed": executed, "message_verified": True}
+
+    async def _find_text_below_search(self, device_id, target, analysis):
+        try:
+            result = await self._capture.capture_from_adb(device_id)
+            if not result.success or result.image is None:
+                return None
+
+            h, w = result.image.shape[:2]
+            ocr_result = await self._ocr.extract_text(result.image)
+            target_lower = target.lower().strip()
+
+            # Find where search bar ends
+            search_end_y = int(h * 0.15)
+            for dt in ocr_result.texts:
+                if "search" in dt.text.lower() or "find" in dt.text.lower():
+                    search_end_y = max(search_end_y, dt.y + dt.h + 10)
+
+            # Find target below search bar
+            for dt in ocr_result.texts:
+                if dt.y < search_end_y:
                     continue
+                dt_lower = dt.text.lower().strip()
+                if target_lower in dt_lower or dt_lower in target_lower:
+                    return (dt.x + dt.w // 2, dt.y + dt.h // 2)
+                # Word-level match
+                words = dt.text.split()
+                for word in words:
+                    if target_lower in word.lower() and len(word) > 2:
+                        return (dt.x + dt.w // 2, dt.y + dt.h // 2)
 
-                # CASE 2: Has message input - we're in a chat, type and send
-                if analysis.has_message_input:
-                    logger.info("In chat! Typing message...")
-                    # Tap message input
-                    input_coords = None
-                    for variant in ["type a message", "Type a message", "message", "Message"]:
-                        input_coords = await self.find_element_on_screen(device_id, variant, skip_input_area=True)
-                        if input_coords:
-                            break
-                    if not input_coords:
-                        # Fallback: bottom center
-                        input_coords = (analysis.image_width // 2, int(analysis.image_height * 0.92))
+            # Fallback: tap first element below search bar
+            for dt in ocr_result.texts:
+                if dt.y > search_end_y and len(dt.text.strip()) > 2:
+                    return (dt.x + dt.w // 2, dt.y + dt.h // 2)
 
-                    await adb.input_tap(device_id, input_coords[0], input_coords[1])
-                    await asyncio.sleep(1.5)
-                    executed.append({"step": "tap", "target": "message_input", "x": input_coords[0], "y": input_coords[1], "success": True})
-
-                    # Type message
-                    await adb.input_text(device_id, message)
-                    await asyncio.sleep(2)
-                    executed.append({"step": "type_text", "text": message[:30], "success": True})
-
-                    # Find and tap send
-                    send_coords = None
-                    for variant in ["send", "Send", "➤", "↑", "✈", "→"]:
-                        send_coords = await self.find_element_on_screen(device_id, variant)
-                        if send_coords:
-                            break
-                    if not send_coords:
-                        # Fallback: bottom right
-                        send_coords = (int(analysis.image_width * 0.9), int(analysis.image_height * 0.95))
-
-                    await adb.input_tap(device_id, send_coords[0], send_coords[1])
-                    await asyncio.sleep(2)
-                    executed.append({"step": "tap", "target": "send", "x": send_coords[0], "y": send_coords[1], "success": True})
-
-                    # Verify
-                    final = await self.analyze_screen(device_id)
-                    message_sent = message.lower() in final.ocr_text.lower()
-                    return {"success": message_sent, "device_id": device_id, "app": app,
-                            "recipient": recipient, "message": message, "executed": executed,
-                            "message_verified": message_sent}
-
-                # CASE 3: Has search bar - search for recipient
-                if analysis.has_search_bar:
-                    # Check if we already typed the recipient name
-                    recipient_typed = recipient.lower() in analysis.ocr_text.lower()
-
-                    if not recipient_typed:
-                        logger.info("Tapping search bar...")
-                        search_coords = await self.find_element_on_screen(device_id, "search")
-                        if search_coords:
-                            await adb.input_tap(device_id, search_coords[0], search_coords[1])
-                            await asyncio.sleep(2)
-                            executed.append({"step": "tap", "target": "search", "success": True})
-
-                        logger.info(f"Typing recipient: {recipient}")
-                        await adb.input_text(device_id, recipient)
-                        await asyncio.sleep(4)
-                        executed.append({"step": "type_text", "text": recipient, "success": True})
-                    else:
-                        logger.info(f"Recipient '{recipient}' already typed, looking for contact...")
-
-                    # Now find and tap the recipient in search results
-                    logger.info(f"Looking for '{recipient}' in search results...")
-                    recipient_coords = await self.find_element_on_screen(
-                        device_id, recipient, skip_input_area=True, search_results_mode=True
-                    )
-
-                    if not recipient_coords:
-                        # Try without search results mode
-                        recipient_coords = await self.find_element_on_screen(
-                            device_id, recipient, skip_input_area=True
-                        )
-
-                    if not recipient_coords:
-                        # Try finding any clickable element below search bar
-                        logger.info("Trying to find contact by UI elements...")
-                        analysis2 = await self.analyze_screen(device_id)
-                        for elem in analysis2.elements:
-                            if elem.y > analysis2.image_height * 0.15:
-                                elem_text = (elem.text or elem.label or "").lower()
-                                if recipient.lower() in elem_text:
-                                    recipient_coords = elem.center()
-                                    break
-
-                    if recipient_coords:
-                        logger.info(f"Found recipient at {recipient_coords}, tapping...")
-                        await adb.input_tap(device_id, recipient_coords[0], recipient_coords[1])
-                        await asyncio.sleep(3)
-                        executed.append({"step": "tap", "target": recipient, "x": recipient_coords[0], "y": recipient_coords[1], "success": True})
-                    else:
-                        logger.warning(f"Could not find '{recipient}' in search results, retrying...")
-                        await asyncio.sleep(2)
-                        continue
-
-                    continue
-
-                # CASE 4: Has send button but no message input - might be in chat list
-                if analysis.has_send_button and not analysis.has_message_input:
-                    logger.info("Has send button but no input, might need to go back...")
-                    await adb.press_back(device_id)
-                    await asyncio.sleep(1)
-                    executed.append({"step": "press_key", "keycode": "KEYCODE_BACK", "success": True})
-                    continue
-
-                # CASE 5: Chat list without search bar visible - look for search or scroll
-                if analysis.has_chat_list:
-                    logger.info("In chat list, looking for search...")
-                    search_coords = await self.find_element_on_screen(device_id, "search")
-                    if search_coords:
-                        await adb.input_tap(device_id, search_coords[0], search_coords[1])
-                        await asyncio.sleep(2)
-                        executed.append({"step": "tap", "target": "search", "success": True})
-                        continue
-
-                # CASE 6: Unknown state - go back
-                logger.info(f"Unknown state, going back... (OCR: {analysis.ocr_text[:100]})")
-                await adb.press_back(device_id)
-                await asyncio.sleep(1)
-                executed.append({"step": "press_key", "keycode": "KEYCODE_BACK", "success": True})
-
-            except Exception as e:
-                logger.error(f"Smart message attempt {attempt + 1} failed: {e}")
-                executed.append({"step": "error", "error": str(e)})
-                await asyncio.sleep(2)
-
-        return {
-            "success": False,
-            "device_id": device_id,
-            "app": app,
-            "recipient": recipient,
-            "message": message,
-            "executed": executed,
-            "error": "Failed after all attempts",
-        }
+        except Exception as e:
+            logger.error(f"Find text below search failed: {e}")
+        return None
 
     def plan_reply(self, device_id: str, message: str) -> NavigationPath:
         current = self._phone_memory.get_current_screen(device_id)

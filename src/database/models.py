@@ -90,13 +90,26 @@ class Workflow(Base):
 
 
 class User(Base):
-    """Application user record"""
+    """Application user record with authentication"""
     __tablename__ = "users"
 
-    id = Column(String(255), primary_key=True)
-    name = Column(String(255), nullable=True)
-    email = Column(String(255), nullable=True)
+    id = Column(String(255), primary_key=True, default=lambda: f"usr_{uuid.uuid4().hex[:12]}")
+    name = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    
+    email_verified = Column(Boolean, default=False)
+    status = Column(String(50), default="active")
+    
+    last_login_at = Column(DateTime, nullable=True)
+    login_count = Column(Integer, default=0)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        Index("idx_user_email", "email"),
+    )
 
 
 class DeviceRecord(Base):

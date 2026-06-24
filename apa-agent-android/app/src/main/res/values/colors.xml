@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="apa_bg">#0A0E17</color>
+    <color name="apa_card">#141927</color>
+    <color name="apa_primary">#6366F1</color>
+    <color name="apa_success">#4ADE80</color>
+    <color name="apa_warning">#FBBF24</color>
+    <color name="apa_error">#EF4444</color>
+    <color name="apa_text_primary">#FFFFFF</color>
+    <color name="apa_text_secondary">#8892A4</color>
+    <color name="apa_text_muted">#6B7280</color>
+</resources>

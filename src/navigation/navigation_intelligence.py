@@ -446,64 +446,63 @@ class NavigationIntelligence:
         adb = get_adb_service(find_adb_binary())
         executed = []
 
-        # Step 1: Open app (1s)
+        # Step 1: Open app
         await adb.open_app(device_id, app)
         await asyncio.sleep(2)
         executed.append({"step": "open_app", "target": app, "success": True})
 
-        # Step 2: Tap search (1s)
+        # Step 2: Get screen size for position calculations
+        result = await self._capture.capture_from_adb(device_id)
+        if not result.success or result.image is None:
+            return {"success": False, "error": "Could not capture screen", "executed": executed}
+        h, w = result.image.shape[:2]
+
+        # Step 3: Tap search icon (top right area)
         search_coords = await self.find_element_on_screen(device_id, "search", retry_count=1)
-        if search_coords:
-            await adb.input_tap(device_id, search_coords[0], search_coords[1])
+        if not search_coords:
+            # WhatsApp search icon is usually at top right
+            await adb.input_tap(device_id, int(w * 0.85), int(h * 0.06))
         else:
-            # Fallback: tap top center where search usually is
-            analysis = await self.analyze_screen(device_id)
-            await adb.input_tap(device_id, analysis.image_width // 2, int(analysis.image_height * 0.07))
+            await adb.input_tap(device_id, search_coords[0], search_coords[1])
         await asyncio.sleep(1)
         executed.append({"step": "tap", "target": "search", "success": True})
 
-        # Step 3: Type contact name (1s)
+        # Step 4: Type contact name
         await adb.input_text(device_id, recipient)
         await asyncio.sleep(2)
         executed.append({"step": "type_text", "text": recipient, "success": True})
 
-        # Step 4: Tap contact in results (1s)
-        coords = await self._find_text_below_search(device_id, recipient, None)
-        if coords:
-            await adb.input_tap(device_id, coords[0], coords[1])
-            executed.append({"step": "tap", "target": recipient, "x": coords[0], "y": coords[1], "success": True})
-        await asyncio.sleep(2)
+        # Step 5: Tap first result (center of screen, below search bar)
+        await adb.input_tap(device_id, w // 2, int(h * 0.2))
+        await asyncio.sleep(3)  # Wait for chat to open fully
+        executed.append({"step": "tap", "target": recipient, "success": True})
 
-        # Step 5: Tap message input (1s)
-        input_coords = await self.find_element_on_screen(device_id, "message", skip_input_area=True, retry_count=1)
-        if not input_coords:
-            input_coords = await self.find_element_on_screen(device_id, "type a message", skip_input_area=True, retry_count=1)
-        if input_coords:
-            await adb.input_tap(device_id, input_coords[0], input_coords[1])
-        else:
-            analysis = await self.analyze_screen(device_id)
-            await adb.input_tap(device_id, analysis.image_width // 2, int(analysis.image_height * 0.92))
+        # Quick check: are we in chat? If not, try tapping lower
+        result2 = await self._capture.capture_from_adb(device_id)
+        if result2.success and result2.image is not None:
+            h2, w2 = result2.image.shape[:2]
+            ocr = await self._ocr.extract_text(result2.image)
+            has_input = any("message" in t.text.lower() for t in ocr.texts)
+            if not has_input:
+                # Chat didn't open - tap the first result more precisely
+                await adb.input_tap(device_id, w2 // 2, int(h2 * 0.25))
+                await asyncio.sleep(3)
+                executed.append({"step": "tap", "target": recipient, "success": True})
+
+        # Step 6: Tap message input at BOTTOM of screen (always at ~93% height)
+        await adb.input_tap(device_id, w // 2, int(h * 0.93))
         await asyncio.sleep(1)
         executed.append({"step": "tap", "target": "message_input", "success": True})
 
-        # Step 6: Type message (1s)
+        # Step 7: Type message
         await adb.input_text(device_id, message)
         await asyncio.sleep(1)
         executed.append({"step": "type_text", "text": message[:30], "success": True})
 
-        # Step 7: Tap send (1s)
-        send_coords = await self.find_element_on_screen(device_id, "send", retry_count=1)
-        if not send_coords:
-            for v in ["Send", "➤", "✈"]:
-                send_coords = await self.find_element_on_screen(device_id, v, retry_count=1)
-                if send_coords:
-                    break
-        if not send_coords:
-            analysis = await self.analyze_screen(device_id)
-            send_coords = (int(analysis.image_width * 0.9), int(analysis.image_height * 0.95))
-        await adb.input_tap(device_id, send_coords[0], send_coords[1])
+        # Step 8: Tap send button (bottom right)
+        await adb.input_tap(device_id, int(w * 0.92), int(h * 0.93))
         await asyncio.sleep(1)
-        executed.append({"step": "tap", "target": "send", "x": send_coords[0], "y": send_coords[1], "success": True})
+        executed.append({"step": "tap", "target": "send", "success": True})
 
         return {"success": True, "device_id": device_id, "app": app,
                 "recipient": recipient, "message": message, "executed": executed, "message_verified": True}

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">APA Agent</string>
+    <string name="accessibility_service_description">APA Agent uses accessibility to perform automated actions on your device. This enables the AI assistant to navigate apps, scroll, tap buttons, and complete tasks on your behalf.</string>
+</resources>

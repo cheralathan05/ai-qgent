@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.APAAgent" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#6366F1</item>
+        <item name="colorPrimaryContainer">#4F46E5</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#4ADE80</item>
+        <item name="android:colorBackground">#0A0E17</item>
+        <item name="colorSurface">#141927</item>
+        <item name="colorOnSurface">#FFFFFF</item>
+        <item name="android:statusBarColor">#0A0E17</item>
+        <item name="android:navigationBarColor">#0A0E17</item>
+        <item name="android:windowBackground">#0A0E17</item>
+    </style>
+
+    <style name="Widget.Material3.Button" parent="">
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="backgroundTint">#6366F1</item>
+        <item name="cornerRadius">12dp</item>
+    </style>
+
+    <style name="Widget.Material3.Button.OutlinedButton" parent="">
+        <item name="android:textColor">#8892A4</item>
+        <item name="backgroundTint">#141927</item>
+        <item name="strokeColor">#2A2F3D</item>
+        <item name="cornerRadius">12dp</item>
+    </style>
+
+    <style name="Widget.Material3.Button.TextButton" parent="">
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:background">#141927</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:gravity">start|center_vertical</item>
+    </style>
+</resources>

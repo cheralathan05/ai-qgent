@@ -44,11 +44,16 @@ def init_database():
         bind=engine,
     )
     
-    # Import life direction models lazily to avoid circular imports
+    # Import additional models to ensure tables are created
     try:
         import life_direction.models  # noqa: F401
     except ImportError:
         logger.warning("Life direction models not found during database initialization")
+
+    try:
+        import database.auth_models  # noqa: F401
+    except ImportError:
+        logger.warning("Auth models not found during database initialization")
     
     # Create all tables
     logger.info("Creating database tables...")

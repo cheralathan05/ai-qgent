@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0A0E17">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Settings"
+            android:textColor="#FFFFFF"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="16dp"/>
+
+        <TextView android:id="@+id/tvDeviceId" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Device: unknown" android:textColor="#8892A4" android:textSize="12sp" android:layout_marginBottom="4dp"/>
+        <TextView android:id="@+id/tvUser" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="User: mobile_user" android:textColor="#8892A4" android:textSize="12sp" android:layout_marginBottom="4dp"/>
+        <TextView android:id="@+id/tvPermissions" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Permissions: 0/5" android:textColor="#8892A4" android:textSize="12sp" android:layout_marginBottom="24dp"/>
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Device" android:textColor="#6B7280" android:textSize="12sp" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnConnectedDevices" android:layout_width="match_parent" android:layout_height="56dp" android:text="Connected Devices" android:textColor="#FFFFFF" android:backgroundTint="#141927" android:layout_marginBottom="4dp" style="@style/Widget.Material3.Button.TextButton"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnTrustedDevices" android:layout_width="match_parent" android:layout_height="56dp" android:text="Trusted Devices" android:textColor="#FFFFFF" android:backgroundTint="#141927" android:layout_marginBottom="16dp" style="@style/Widget.Material3.Button.TextButton"/>
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Security" android:textColor="#6B7280" android:textSize="12sp" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnPermissions" android:layout_width="match_parent" android:layout_height="56dp" android:text="Permissions" android:textColor="#FFFFFF" android:backgroundTint="#141927" android:layout_marginBottom="4dp" style="@style/Widget.Material3.Button.TextButton"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnSecurity" android:layout_width="match_parent" android:layout_height="56dp" android:text="Security" android:textColor="#FFFFFF" android:backgroundTint="#141927" android:layout_marginBottom="16dp" style="@style/Widget.Material3.Button.TextButton"/>
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="System" android:textColor="#6B7280" android:textSize="12sp" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnNotifications" android:layout_width="match_parent" android:layout_height="56dp" android:text="Notifications" android:textColor="#FFFFFF" android:backgroundTint="#141927" android:layout_marginBottom="4dp" style="@style/Widget.Material3.Button.TextButton"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnAiSettings" android:layout_width="match_parent" android:layout_height="56dp" android:text="AI Settings" android:textColor="#FFFFFF" android:backgroundTint="#141927" android:layout_marginBottom="4dp" style="@style/Widget.Material3.Button.TextButton"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnDeviceTwin" android:layout_width="match_parent" android:layout_height="56dp" android:text="Device Twin" android:textColor="#FFFFFF" android:backgroundTint="#141927" android:layout_marginBottom="4dp" style="@style/Widget.Material3.Button.TextButton"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnLogs" android:layout_width="match_parent" android:layout_height="56dp" android:text="Logs" android:textColor="#FFFFFF" android:backgroundTint="#141927" android:layout_marginBottom="24dp" style="@style/Widget.Material3.Button.TextButton"/>
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Danger Zone" android:textColor="#EF4444" android:textSize="12sp" android:textStyle="bold" android:layout_marginBottom="8dp"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnDisconnect" android:layout_width="match_parent" android:layout_height="56dp" android:text="Disconnect Device" android:textColor="#EF4444" android:backgroundTint="#1F1520" android:layout_marginBottom="4dp"/>
+        <com.google.android.material.button.MaterialButton android:id="@+id/btnFactoryReset" android:layout_width="match_parent" android:layout_height="56dp" android:text="Factory Reset Agent" android:textColor="#EF4444" android:backgroundTint="#1F1520"/>
+    </LinearLayout>
+</ScrollView>

@@ -547,6 +547,10 @@ app.include_router(phase3_router)
 from interconnection.api import router as unified_router
 app.include_router(unified_router)
 
+# Register APA-OS V2 API router (Auth, Devices, Trust, Permissions, Agents, Automation, Notifications)
+from api.v2 import router as v2_router
+app.include_router(v2_router)
+
 
 # Health check endpoint
 @app.get("/")

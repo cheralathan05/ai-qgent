@@ -442,70 +442,177 @@ class NavigationIntelligence:
         recipient: str,
         message: str,
     ) -> Dict[str, Any]:
-        from services.adb_service import get_adb_service, find_adb_binary
-        adb = get_adb_service(find_adb_binary())
+        """Execute message sending using Vision-Based Agentic Automation.
+
+        This method uses the multi-agent vision pipeline instead of hardcoded coordinates.
+        Flow:
+        1. VisionAgent analyzes screen state
+        2. NavigationAgent plans steps based on detected elements
+        3. ExecutionAgent executes with verification at each step
+        4. VerificationAgent confirms message was actually sent
+        5. MemoryAgent caches successful element positions
+        6. LearningAgent records outcome for future improvement
+        """
+        from agents.vision_agent import get_vision_agent
+        from agents.navigation_agent import get_navigation_agent, NavigationAction
+        from agents.execution_agent import get_execution_agent
+        from agents.verification_agent import get_verification_agent
+        from agents.memory_agent import get_memory_agent
+        from agents.learning_agent import get_learning_agent, ActionRecord
+
+        vision = get_vision_agent()
+        nav_agent = get_navigation_agent()
+        executor = get_execution_agent()
+        verifier = get_verification_agent()
+        memory = get_memory_agent()
+        learner = get_learning_agent()
+
         executed = []
+        start_time = datetime.utcnow()
 
-        # Step 1: Open app
-        await adb.open_app(device_id, app)
-        await asyncio.sleep(2)
-        executed.append({"step": "open_app", "target": app, "success": True})
+        try:
+            # Step 1: Analyze current screen state
+            logger.info(f"VisionAgent: Analyzing screen for {app} message to {recipient}")
+            screen_state = await vision.analyze_screen(device_id, app)
 
-        # Step 2: Get screen size for position calculations
-        result = await self._capture.capture_from_adb(device_id)
-        if not result.success or result.image is None:
-            return {"success": False, "error": "Could not capture screen", "executed": executed}
-        h, w = result.image.shape[:2]
+            if not screen_state.success:
+                return {
+                    "success": False,
+                    "error": f"Screen analysis failed: {screen_state.error}",
+                    "executed": executed,
+                }
 
-        # Step 3: Tap search icon (top right area)
-        search_coords = await self.find_element_on_screen(device_id, "search", retry_count=1)
-        if not search_coords:
-            # WhatsApp search icon is usually at top right
-            await adb.input_tap(device_id, int(w * 0.85), int(h * 0.06))
-        else:
-            await adb.input_tap(device_id, search_coords[0], search_coords[1])
-        await asyncio.sleep(1)
-        executed.append({"step": "tap", "target": "search", "success": True})
+            logger.info(
+                f"VisionAgent: Screen={screen_state.screen_type}, "
+                f"app={screen_state.app_name}, elements={len(screen_state.elements)}"
+            )
 
-        # Step 4: Type contact name
-        await adb.input_text(device_id, recipient)
-        await asyncio.sleep(2)
-        executed.append({"step": "type_text", "text": recipient, "success": True})
+            # Step 2: Plan navigation using VisionAgent's detected elements
+            plan = nav_agent.plan_send_message(
+                app_name=app,
+                recipient=recipient,
+                message=message,
+                current_screen_type=screen_state.screen_type,
+                current_app=screen_state.app_name,
+            )
 
-        # Step 5: Tap first result (center of screen, below search bar)
-        await adb.input_tap(device_id, w // 2, int(h * 0.2))
-        await asyncio.sleep(3)  # Wait for chat to open fully
-        executed.append({"step": "tap", "target": recipient, "success": True})
+            logger.info(
+                f"NavigationAgent: Planned {plan.total_steps} steps with "
+                f"confidence={plan.confidence:.2f}"
+            )
 
-        # Quick check: are we in chat? If not, try tapping lower
-        result2 = await self._capture.capture_from_adb(device_id)
-        if result2.success and result2.image is not None:
-            h2, w2 = result2.image.shape[:2]
-            ocr = await self._ocr.extract_text(result2.image)
-            has_input = any("message" in t.text.lower() for t in ocr.texts)
-            if not has_input:
-                # Chat didn't open - tap the first result more precisely
-                await adb.input_tap(device_id, w2 // 2, int(h2 * 0.25))
-                await asyncio.sleep(3)
-                executed.append({"step": "tap", "target": recipient, "success": True})
+            # Step 3: Execute plan with verification
+            execution_result = await executor.execute_plan(device_id, plan)
 
-        # Step 6: Tap message input at BOTTOM of screen (always at ~93% height)
-        await adb.input_tap(device_id, w // 2, int(h * 0.93))
-        await asyncio.sleep(1)
-        executed.append({"step": "tap", "target": "message_input", "success": True})
+            # Step 4: Verify message was actually sent
+            if execution_result.success:
+                logger.info("Verifying message was actually sent...")
+                msg_verification = await verifier.verify_message_sent(
+                    device_id, message, timeout_seconds=8
+                )
 
-        # Step 7: Type message
-        await adb.input_text(device_id, message)
-        await asyncio.sleep(1)
-        executed.append({"step": "type_text", "text": message[:30], "success": True})
+                if msg_verification.passed:
+                    logger.info(
+                        f"Message VERIFIED as sent (confidence={msg_verification.confidence:.2f})"
+                    )
+                    message_verified = True
+                else:
+                    logger.warning("Message NOT verified - may not have been sent")
+                    message_verified = False
+            else:
+                message_verified = False
 
-        # Step 8: Tap send button (bottom right)
-        await adb.input_tap(device_id, int(w * 0.92), int(h * 0.93))
-        await asyncio.sleep(1)
-        executed.append({"step": "tap", "target": "send", "success": True})
+            # Step 5: Build response
+            elapsed = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-        return {"success": True, "device_id": device_id, "app": app,
-                "recipient": recipient, "message": message, "executed": executed, "message_verified": True}
+            # Cache successful element positions
+            if execution_result.success:
+                for sr in execution_result.step_results:
+                    if sr.success and sr.coordinates_used[0] > 0:
+                        memory.cache_element(
+                            app_name=app,
+                            screen_type=screen_state.screen_type,
+                            element_type=sr.step.target,
+                            text=sr.step.target,
+                            x=sr.coordinates_used[0],
+                            y=sr.coordinates_used[1],
+                            w=50, h=50,
+                            confidence=0.8,
+                        )
+
+            # Record for learning
+            learner.record_action(ActionRecord(
+                action_type="send_message",
+                target=recipient,
+                app_name=app,
+                success=message_verified,
+                confidence=execution_result.overall_confidence,
+                retries=execution_result.total_retries,
+                execution_time_ms=elapsed,
+            ))
+
+            return {
+                "success": message_verified,
+                "device_id": device_id,
+                "app": app,
+                "recipient": recipient,
+                "message": message,
+                "executed": [
+                    {
+                        "step": sr.step.action.value,
+                        "target": sr.step.target,
+                        "x": sr.coordinates_used[0],
+                        "y": sr.coordinates_used[1],
+                        "success": sr.success,
+                        "verification": sr.verification.to_dict() if sr.verification else None,
+                    }
+                    for sr in execution_result.step_results
+                ],
+                "message_verified": message_verified,
+                "verification": "passed" if message_verified else "failed",
+                "execution": {
+                    "total_steps": execution_result.total_steps,
+                    "successful_steps": execution_result.successful_steps,
+                    "failed_steps": execution_result.failed_steps,
+                    "total_retries": execution_result.total_retries,
+                    "confidence": execution_result.overall_confidence,
+                    "execution_time_ms": elapsed,
+                },
+                "screen_analysis": {
+                    "app": screen_state.app_name,
+                    "screen_type": screen_state.screen_type,
+                    "elements_detected": len(screen_state.elements),
+                    "ocr_engine": screen_state.ocr_engine,
+                },
+                "instruction": f"send message to {recipient} on {app}",
+            }
+
+        except Exception as e:
+            elapsed = (datetime.utcnow() - start_time).total_seconds() * 1000
+            logger.error(f"execute_smart_message failed: {e}", exc_info=True)
+
+            learner.record_action(ActionRecord(
+                action_type="send_message",
+                target=recipient,
+                app_name=app,
+                success=False,
+                confidence=0.0,
+                retries=0,
+                error=str(e),
+                execution_time_ms=elapsed,
+            ))
+
+            return {
+                "success": False,
+                "error": str(e),
+                "device_id": device_id,
+                "app": app,
+                "recipient": recipient,
+                "message": message,
+                "executed": executed,
+                "message_verified": False,
+                "verification": "failed",
+            }
 
     async def _find_text_below_search(self, device_id, target, analysis):
         try:

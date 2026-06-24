@@ -66,9 +66,20 @@ class OCRService:
         self._available_engines: List[str] = []
 
     def _check_engines(self):
-        """Check which OCR engines are available at startup."""
+        """Check which OCR engines are available at startup.
+
+        Engine priority: PaddleOCR > EasyOCR > Tesseract
+        """
         if self._engines_checked:
             return
+
+        # Check PaddleOCR (highest accuracy for mobile UIs)
+        try:
+            from paddleocr import PaddleOCR
+            self._available_engines.append("paddleocr")
+            logger.info("OCR engine available: PaddleOCR (primary)")
+        except ImportError:
+            logger.warning("OCR engine NOT available: PaddleOCR (not installed)")
 
         # Check EasyOCR
         try:
@@ -113,6 +124,26 @@ class OCRService:
                 logger.warning(f"EasyOCR initialization failed: {e}, will try Tesseract fallback")
                 self._reader = "tesseract_fallback"
         return self._reader
+
+    def _get_paddle_reader(self):
+        """Get PaddleOCR reader (primary engine)."""
+        if not hasattr(self, '_paddle_reader'):
+            self._paddle_reader = None
+        if self._paddle_reader is None:
+            try:
+                from paddleocr import PaddleOCR
+                logger.info("Initializing PaddleOCR (primary engine)...")
+                self._paddle_reader = PaddleOCR(
+                    use_angle_cls=True,
+                    lang="en",
+                    use_gpu=False,
+                    show_log=False,
+                )
+                logger.info("PaddleOCR initialized successfully")
+            except Exception as e:
+                logger.warning(f"PaddleOCR initialization failed: {e}")
+                self._paddle_reader = False
+        return self._paddle_reader if self._paddle_reader is not False else None
 
     def _tesseract_ocr(self, image: np.ndarray) -> List[tuple]:
         """Fallback OCR using Tesseract via pytesseract."""
@@ -166,6 +197,49 @@ class OCRService:
 
         return gray, binary
 
+    def _paddleocr_extract(self, image: np.ndarray, reader) -> List[DetectedText]:
+        """Run PaddleOCR on an image and return DetectedText list."""
+        texts = []
+        try:
+            if len(image.shape) == 2:
+                rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+            else:
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+            result = reader.ocr(rgb, cls=True)
+
+            if not result or not result[0]:
+                return texts
+
+            for line in result[0]:
+                bbox_points = line[0]
+                text = line[1][0]
+                confidence = float(line[1][1])
+
+                if confidence < 0.15:
+                    continue
+
+                xs = [int(p[0]) for p in bbox_points]
+                ys = [int(p[1]) for p in bbox_points]
+                x = min(xs)
+                y = min(ys)
+                x2 = max(xs)
+                y2 = max(ys)
+
+                if (x2 - x) <= 0 or (y2 - y) <= 0:
+                    continue
+
+                texts.append(DetectedText(
+                    text=text.strip(),
+                    confidence=confidence,
+                    bbox=(x, y, x2 - x, y2 - y),
+                    x=x, y=y, w=x2 - x, h=y2 - y,
+                ))
+
+        except Exception as e:
+            logger.warning(f"PaddleOCR extraction failed: {e}")
+        return texts
+
     def _easyocr_extract(self, image: np.ndarray, reader) -> List[DetectedText]:
         """Run EasyOCR on an image and return DetectedText list."""
         texts = []
@@ -215,7 +289,7 @@ class OCRService:
             elapsed = (time.time() - start_time) * 1000
             return OCRResult(
                 success=False,
-                error="No OCR engines available. Install easyocr or pytesseract.",
+                error="No OCR engines available. Install paddleocr, easyocr, or pytesseract.",
                 image_width=w, image_height=h,
                 processing_time_ms=elapsed,
             )
@@ -223,23 +297,55 @@ class OCRService:
         # Preprocess
         gray, binary = self._preprocess_for_ocr(image)
 
-        # Strategy 1: EasyOCR on original image
+        # Strategy 1: PaddleOCR on original image (highest accuracy)
+        if "paddleocr" in self._available_engines:
+            paddle_reader = self._get_paddle_reader()
+            if paddle_reader:
+                logger.info("OCR: Trying PaddleOCR on original image...")
+                texts = self._paddleocr_extract(image, paddle_reader)
+
+                # Strategy 2: PaddleOCR on enhanced/preprocessed image
+                if not texts:
+                    logger.info("OCR: PaddleOCR found nothing on original, trying preprocessed...")
+                    texts = self._paddleocr_extract(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), paddle_reader)
+
+                # Strategy 3: PaddleOCR on binary image
+                if not texts:
+                    logger.info("OCR: Trying PaddleOCR on binary image...")
+                    texts = self._paddleocr_extract(cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR), paddle_reader)
+
+                if texts:
+                    elapsed = (time.time() - start_time) * 1000
+                    full_text = " | ".join(t.text for t in texts)
+                    avg_conf = sum(t.confidence for t in texts) / len(texts) if texts else 0
+                    logger.info(f"OCR RESULT (PaddleOCR) - text_count={len(texts)}, avg_conf={avg_conf:.2f}, time={elapsed:.0f}ms")
+                    logger.info(f"OCR text preview: {full_text[:200]}")
+                    return OCRResult(
+                        texts=texts,
+                        full_text=full_text,
+                        image_width=w, image_height=h,
+                        success=True,
+                        engine_used="paddleocr",
+                        processing_time_ms=elapsed,
+                    )
+
+        # Strategy 4: EasyOCR on original image
         reader = self._get_reader()
         if reader and reader != "tesseract_fallback":
             logger.info("OCR: Trying EasyOCR on original image...")
             texts = self._easyocr_extract(image, reader)
 
-            # Strategy 2: EasyOCR on enhanced/preprocessed image
+            # Strategy 5: EasyOCR on enhanced/preprocessed image
             if not texts:
                 logger.info("OCR: EasyOCR found nothing on original, trying preprocessed...")
                 texts = self._easyocr_extract(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), reader)
 
-            # Strategy 3: EasyOCR on binary image
+            # Strategy 6: EasyOCR on binary image
             if not texts:
                 logger.info("OCR: Trying EasyOCR on binary image...")
                 texts = self._easyocr_extract(cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR), reader)
 
-            # Strategy 4: EasyOCR on sharpened image
+            # Strategy 7: EasyOCR on sharpened image
             if not texts:
                 logger.info("OCR: Trying EasyOCR on sharpened image...")
                 kernel = np.array([[-1,-1,-1],[-1,9,-1],[-1,-1,-1]])
@@ -250,7 +356,6 @@ class OCRService:
                 elapsed = (time.time() - start_time) * 1000
                 full_text = " | ".join(t.text for t in texts)
                 logger.info(f"OCR RESULT (EasyOCR) - text_count={len(texts)}, time={elapsed:.0f}ms")
-                logger.info(f"OCR text preview: {full_text[:200]}")
                 return OCRResult(
                     texts=texts,
                     full_text=full_text,
@@ -260,7 +365,7 @@ class OCRService:
                     processing_time_ms=elapsed,
                 )
 
-        # Strategy 5: Tesseract fallback
+        # Strategy 8: Tesseract fallback
         if "tesseract" in self._available_engines:
             logger.info("OCR: Trying Tesseract fallback...")
             tesseract_results = self._tesseract_ocr(image)

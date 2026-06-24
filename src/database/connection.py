@@ -55,11 +55,22 @@ def init_database():
     except ImportError:
         logger.warning("Auth models not found during database initialization")
     
-    # Create all tables
+    # Create all tables - drop ALL existing indexes first to avoid DuplicateTable
     logger.info("Creating database tables...")
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        # Collect every index name from every registered table
+        all_index_names = []
+        for table in Base.metadata.sorted_tables:
+            for idx in table.indexes:
+                all_index_names.append(idx.name)
+        for idx_name in all_index_names:
+            try:
+                conn.execute(text(f"DROP INDEX IF EXISTS {idx_name}"))
+            except Exception:
+                pass
+        conn.commit()
     Base.metadata.create_all(bind=engine)
-    
-    logger.info("Database initialized successfully")
 
 
 def get_db_session() -> Session:

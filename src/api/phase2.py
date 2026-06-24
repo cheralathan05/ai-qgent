@@ -603,6 +603,18 @@ async def app_knowledge_detail(app_name: str) -> Dict[str, Any]:
 
 @router.post("/messages/send")
 async def messages_send(request: SendMessageRequest) -> Dict[str, Any]:
+    """Send a message using Vision-Based Agentic Automation.
+
+    This endpoint uses the multi-agent vision pipeline:
+    - VisionAgent analyzes screen state
+    - NavigationAgent plans steps based on detected elements
+    - ExecutionAgent executes with verification at each step
+    - VerificationAgent confirms message was actually sent
+    - MemoryAgent caches successful positions
+    - LearningAgent records outcome
+
+    Only returns success:true after visual verification confirms message sent.
+    """
     real_device = await _get_adb_device_id(request.device_id)
     if not real_device:
         return {"success": False, "error": "No Android device connected via ADB"}
@@ -692,16 +704,24 @@ async def messages_send(request: SendMessageRequest) -> Dict[str, Any]:
 
     nav = get_navigation_intelligence()
 
-    # Use smart execution that analyzes screen at each step
+    # Use Vision-Based Agentic Automation for message sending
     result = await nav.execute_smart_message(
         real_device, request.app, request.recipient, request.message
     )
 
+    # Emit completion event with full details
     await event_manager.emit(
         workflow_id="phase2", event_type=EventType.MESSAGE_SENT,
-        payload={"device_id": real_device, "app": request.app, "recipient": request.recipient,
-                 "message": request.message, "success": result.get("success", False)},
-        source="phase2_api", severity=EventSeverity.INFO if result.get("success") else EventSeverity.WARNING,
+        payload={
+            "device_id": real_device, "app": request.app,
+            "recipient": request.recipient, "message": request.message,
+            "success": result.get("success", False),
+            "message_verified": result.get("message_verified", False),
+            "verification": result.get("verification", "unknown"),
+            "execution": result.get("execution", {}),
+        },
+        source="phase2_api",
+        severity=EventSeverity.INFO if result.get("success") else EventSeverity.WARNING,
         device_id=real_device,
     )
 
@@ -713,7 +733,9 @@ async def messages_send(request: SendMessageRequest) -> Dict[str, Any]:
         "message": request.message,
         "executed": result.get("executed", []),
         "message_verified": result.get("message_verified", False),
-        "verification": "passed" if result.get("message_verified") else "failed",
+        "verification": result.get("verification", "failed"),
+        "execution_details": result.get("execution", {}),
+        "screen_analysis": result.get("screen_analysis", {}),
         "instruction": f"send message to {request.recipient} on {request.app}",
     }
 
@@ -893,4 +915,98 @@ async def verify_pipeline(request: VerifyRequest) -> Dict[str, Any]:
         "success": all_passed,
         "all_passed": all_passed,
         "results": [r.to_dict() for r in results],
+    }
+
+
+# ==================== Vision Agent APIs ====================
+
+@router.post("/vision/analyze")
+async def vision_analyze(device_id: Optional[str] = None, foreground_app: Optional[str] = None) -> Dict[str, Any]:
+    """Full screen analysis using VisionAgent (YOLO + OCR + classification)."""
+    real_device = await _get_adb_device_id(device_id)
+    if not real_device:
+        return {"success": False, "error": "No Android device connected via ADB"}
+
+    from agents.vision_agent import get_vision_agent
+    vision = get_vision_agent()
+    state = await vision.analyze_screen(real_device, foreground_app)
+    return state.to_dict()
+
+
+@router.post("/vision/quick")
+async def vision_quick(device_id: Optional[str] = None) -> Dict[str, Any]:
+    """Quick screen analysis (OCR + classification only, no YOLO)."""
+    real_device = await _get_adb_device_id(device_id)
+    if not real_device:
+        return {"success": False, "error": "No Android device connected via ADB"}
+
+    from agents.vision_agent import get_vision_agent
+    vision = get_vision_agent()
+    state = await vision.quick_analyze(real_device)
+    return state.to_dict()
+
+
+@router.post("/vision/find")
+async def vision_find(
+    device_id: Optional[str] = None,
+    target: str = "",
+    element_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Find a specific element on screen."""
+    real_device = await _get_adb_device_id(device_id)
+    if not real_device:
+        return {"success": False, "error": "No Android device connected via ADB"}
+
+    from agents.vision_agent import get_vision_agent
+    vision = get_vision_agent()
+    element = await vision.find_element(real_device, target, element_type)
+    if element:
+        return {"success": True, "element": element.to_dict()}
+    return {"success": False, "error": f"Element '{target}' not found"}
+
+
+# ==================== Memory & Learning APIs ====================
+
+@router.get("/memory/element-cache")
+async def memory_element_cache() -> Dict[str, Any]:
+    """Get element position cache statistics."""
+    from agents.memory_agent import get_memory_agent
+    memory = get_memory_agent()
+    return {"success": True, "stats": memory.get_cache_stats()}
+
+
+@router.delete("/memory/element-cache")
+async def memory_element_cache_clear() -> Dict[str, Any]:
+    """Clear element position cache."""
+    from agents.memory_agent import get_memory_agent
+    memory = get_memory_agent()
+    memory.clear_expired()
+    return {"success": True, "message": "Expired cache entries cleared"}
+
+
+@router.get("/learning/stats")
+async def learning_stats() -> Dict[str, Any]:
+    """Get learning agent statistics."""
+    from agents.learning_agent import get_learning_agent
+    learner = get_learning_agent()
+    return {"success": True, "stats": learner.get_stats()}
+
+
+@router.get("/learning/failures")
+async def learning_failures(app_name: Optional[str] = None) -> Dict[str, Any]:
+    """Get common failure patterns."""
+    from agents.learning_agent import get_learning_agent
+    learner = get_learning_agent()
+    failures = learner.get_common_failures(app_name)
+    return {
+        "success": True,
+        "failures": [
+            {
+                "pattern": f.pattern,
+                "count": f.count,
+                "apps_affected": f.apps_affected,
+                "suggested_fix": f.suggested_fix,
+            }
+            for f in failures
+        ],
     }

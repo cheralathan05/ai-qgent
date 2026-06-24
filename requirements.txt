@@ -24,6 +24,12 @@ opencv-python>=4.8.0
 Pillow>=10.0.0
 numpy>=1.24.0
 
+# Phase 2 - Advanced Vision (Vision-Based Agentic Automation)
+paddlepaddle>=2.5.0
+paddleocr>=2.7.0
+ultralytics>=8.0.0
+pytesseract>=0.3.10
+
 # Phase 3 - Knowledge Intelligence
 chromadb>=0.4.0
 faiss-cpu>=1.7.0

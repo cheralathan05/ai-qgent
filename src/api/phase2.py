@@ -1073,12 +1073,30 @@ async def universal_command(request: UniversalCommandRequest) -> Dict[str, Any]:
     }
 
 
+async def _ensure_screen_awake(adb, device_id: str) -> None:
+    """Ensure phone screen is on and unlocked before executing actions."""
+    # Check current power state
+    try:
+        power_out = await adb.shell(device_id, "dumpsys power 2>/dev/null | grep mWakefulness")
+        if "Dozing" in power_out or "Asleep" in power_out:
+            await adb.shell(device_id, "input keyevent KEYCODE_WAKEUP")
+            await asyncio.sleep(1)
+        # Swipe to unlock (harmless if already unlocked)
+        await adb.shell(device_id, "input touchscreen swipe 300 1000 300 100")
+        await asyncio.sleep(1.5)
+    except Exception:
+        pass
+
+
 async def _route_action(device_id: str, recognition: RecognitionResult) -> Dict[str, Any]:
     """Route a recognized action to the appropriate execution handler."""
     action = recognition.action
     entities = recognition.entities
     nav = get_navigation_intelligence()
     adb = get_adb_service(find_adb_binary())
+    
+    # Ensure screen is awake and unlocked before any action
+    await _ensure_screen_awake(adb, device_id)
     
     try:
         # --- APP ACTIONS ---

@@ -328,6 +328,16 @@ class ADBService:
             if match:
                 return match.group(1)
 
+            # Fallback: check ResumedActivity (Android 14+)
+            act_out = await self.shell(
+                device_id,
+                "dumpsys activity activities 2>/dev/null | grep ResumedActivity",
+            )
+            for line in act_out.splitlines():
+                m = re.search(r"([\w\.]+)/", line)
+                if m:
+                    return m.group(1)
+
             return None
         except Exception:
             return None

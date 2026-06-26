@@ -103,7 +103,7 @@ class ExecutionAgent:
     ) -> ExecutionResult:
         """Execute a full navigation plan with verification."""
         start = datetime.utcnow()
-        result = ExecutionResult(plan_goal=plan.goal)
+        result = ExecutionResult(plan_goal=plan.goal, success=False)
         result.total_steps = len(plan.steps)
 
         adb = self._get_adb()

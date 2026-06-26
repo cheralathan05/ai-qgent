@@ -22,6 +22,7 @@ class WorkflowStatus(str, enum.Enum):
     APPROVED = "approved"
     EXECUTING = "executing"
     VERIFYING = "verifying"
+    RECOVERING = "recovering"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"

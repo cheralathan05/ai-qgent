@@ -37,7 +37,8 @@ class EventType(str, Enum):
     # Planning
     PLAN_CREATED = "plan_created"
     PLAN_UPDATED = "plan_updated"
-    
+    ACTION_PLANNED = "action_planned"
+
     # Execution
     EXECUTION_STARTED = "execution_started"
     STEP_STARTED = "step_started"
@@ -73,8 +74,10 @@ class EventType(str, Enum):
     RECOVERY_ATTEMPTED = "recovery_attempted"
     RECOVERY_SUCCEEDED = "recovery_succeeded"
     RECOVERY_FAILED = "recovery_failed"
-    
+    RECOVERY_STARTED = "recovery_started"
+
     # Screen / Vision
+    PERCEPTION_COMPLETED = "perception_completed"
     SCREEN_CHANGED = "screen_changed"
     SCREEN_DETECTED = "screen_detected"
     SCREEN_CAPTURED = "screen_captured"

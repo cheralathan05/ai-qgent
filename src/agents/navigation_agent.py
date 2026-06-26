@@ -106,6 +106,14 @@ class NavigationAgent:
         },
     }
 
+    def _is_chat_screen(self, screen_type: str) -> bool:
+        """Check if the current screen type indicates an active chat."""
+        chat_screens = [
+            "whatsapp_chat", "telegram_chat", "instagram_dm_chat",
+            "discord_chat", "messenger_chat",
+        ]
+        return screen_type.lower() in chat_screens if screen_type else False
+
     def plan_send_message(
         self,
         app_name: str,
@@ -114,110 +122,152 @@ class NavigationAgent:
         current_screen_type: str = "",
         current_app: str = "",
     ) -> NavigationPlan:
-        """Plan message sending steps based on current state."""
-        steps = []
-        confidence = 0.5
+        """Plan message sending steps based on current screen state.
 
-        # Step 1: Open app if not already there
-        if current_app != app_name:
+        Intelligently adapts - if already in a chat screen, skips search/navigation
+        and goes directly to typing and sending.
+        """
+        steps = []
+        already_in_chat = self._is_chat_screen(current_screen_type)
+
+        if already_in_chat:
+            # Already in a chat screen - just type and send
+            confidence = 0.9
+            logger.info(f"Already in chat screen ({current_screen_type}), skipping navigation")
+
             steps.append(NavigationStep(
-                action=NavigationAction.OPEN_APP,
-                target=app_name,
-                description=f"Open {app_name}",
+                action=NavigationAction.TAP,
+                target="input_field",
+                description="Tap message input field",
+                confidence=0.9,
+            ))
+            steps.append(NavigationStep(
+                action=NavigationAction.TYPE_TEXT,
+                text=message,
+                description=f"Type message: {message[:30]}...",
                 confidence=0.95,
             ))
             steps.append(NavigationStep(
                 action=NavigationAction.WAIT,
-                duration=2.0,
-                description="Wait for app to load",
+                duration=0.5,
+                description="Wait for typing",
                 confidence=1.0,
             ))
-            confidence = 0.7
+            steps.append(NavigationStep(
+                action=NavigationAction.TAP,
+                target="send_button",
+                description="Tap send button",
+                confidence=0.9,
+                verify_state="message_sent",
+            ))
+            steps.append(NavigationStep(
+                action=NavigationAction.WAIT,
+                duration=1.0,
+                description="Wait for send confirmation",
+                confidence=1.0,
+            ))
         else:
-            confidence = 0.8
+            # Need to navigate to the chat first
+            # Step 1: Open app if not already there
+            if current_app != app_name:
+                steps.append(NavigationStep(
+                    action=NavigationAction.OPEN_APP,
+                    target=app_name,
+                    description=f"Open {app_name}",
+                    confidence=0.95,
+                ))
+                steps.append(NavigationStep(
+                    action=NavigationAction.WAIT,
+                    duration=2.0,
+                    description="Wait for app to load",
+                    confidence=1.0,
+                ))
+                confidence = 0.7
+            else:
+                confidence = 0.8
 
-        # Step 2: Find and tap search
-        steps.append(NavigationStep(
-            action=NavigationAction.TAP,
-            target="search_bar",
-            description=f"Tap search bar to find {recipient}",
-            confidence=0.85,
-            verify_state="search_open",
-        ))
+            # Step 2: Find and tap search
+            steps.append(NavigationStep(
+                action=NavigationAction.TAP,
+                target="search_bar",
+                description=f"Tap search bar to find {recipient}",
+                confidence=0.85,
+                verify_state="search_open",
+            ))
 
-        # Step 3: Type recipient name
-        steps.append(NavigationStep(
-            action=NavigationAction.TYPE_TEXT,
-            text=recipient,
-            description=f"Type contact name: {recipient}",
-            confidence=0.9,
-        ))
+            # Step 3: Type recipient name
+            steps.append(NavigationStep(
+                action=NavigationAction.TYPE_TEXT,
+                text=recipient,
+                description=f"Type contact name: {recipient}",
+                confidence=0.9,
+            ))
 
-        # Step 4: Wait for results
-        steps.append(NavigationStep(
-            action=NavigationAction.WAIT,
-            duration=1.5,
-            description="Wait for search results",
-            confidence=1.0,
-        ))
+            # Step 4: Wait for results
+            steps.append(NavigationStep(
+                action=NavigationAction.WAIT,
+                duration=1.5,
+                description="Wait for search results",
+                confidence=1.0,
+            ))
 
-        # Step 5: Tap first result
-        steps.append(NavigationStep(
-            action=NavigationAction.TAP,
-            target=recipient,
-            description=f"Tap {recipient} in search results",
-            confidence=0.8,
-            verify_state="chat_open",
-        ))
+            # Step 5: Tap first result
+            steps.append(NavigationStep(
+                action=NavigationAction.TAP,
+                target=recipient,
+                description=f"Tap {recipient} in search results",
+                confidence=0.8,
+                verify_state="chat_open",
+            ))
 
-        # Step 6: Wait for chat to open
-        steps.append(NavigationStep(
-            action=NavigationAction.WAIT,
-            duration=2.0,
-            description="Wait for chat to fully load",
-            confidence=1.0,
-        ))
+            # Step 6: Wait for chat to open
+            steps.append(NavigationStep(
+                action=NavigationAction.WAIT,
+                duration=2.0,
+                description="Wait for chat to fully load",
+                confidence=1.0,
+            ))
 
-        # Step 7: Tap message input
-        steps.append(NavigationStep(
-            action=NavigationAction.TAP,
-            target="input_field",
-            description="Tap message input field",
-            confidence=0.85,
-        ))
+            # Step 7: Tap message input
+            steps.append(NavigationStep(
+                action=NavigationAction.TAP,
+                target="input_field",
+                description="Tap message input field",
+                confidence=0.85,
+            ))
 
-        # Step 8: Type message
-        steps.append(NavigationStep(
-            action=NavigationAction.TYPE_TEXT,
-            text=message,
-            description=f"Type message: {message[:30]}...",
-            confidence=0.9,
-        ))
+            # Step 8: Type message
+            steps.append(NavigationStep(
+                action=NavigationAction.TYPE_TEXT,
+                text=message,
+                description=f"Type message: {message[:30]}...",
+                confidence=0.9,
+            ))
 
-        # Step 9: Wait for typing
-        steps.append(NavigationStep(
-            action=NavigationAction.WAIT,
-            duration=0.5,
-            description="Wait for message to be entered",
-            confidence=1.0,
-        ))
+            # Step 9: Wait for typing
+            steps.append(NavigationStep(
+                action=NavigationAction.WAIT,
+                duration=0.5,
+                description="Wait for message to be entered",
+                confidence=1.0,
+            ))
 
-        # Step 10: Tap send button
-        steps.append(NavigationStep(
-            action=NavigationAction.TAP,
-            target="send_button",
-            description="Tap send button",
-            confidence=0.85,
-            verify_state="message_sent",
-        ))
+            # Step 10: Tap send button
+            steps.append(NavigationStep(
+                action=NavigationAction.TAP,
+                target="send_button",
+                description="Tap send button",
+                confidence=0.85,
+                verify_state="message_sent",
+            ))
 
-        # Step 11: Wait for send
-        steps.append(NavigationStep(
-            action=NavigationAction.WAIT,
-            duration=1.0,
-            description="Wait for message to be sent",
-            confidence=1.0,
-        ))
+            # Step 11: Wait for send
+            steps.append(NavigationStep(
+                action=NavigationAction.WAIT,
+                duration=1.0,
+                description="Wait for message to be sent",
+                confidence=1.0,
+            ))
 
         estimated_time = sum(
             s.duration if s.action == NavigationAction.WAIT else 1.5

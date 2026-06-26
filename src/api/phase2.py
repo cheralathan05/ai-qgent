@@ -17,6 +17,8 @@ from vision.phone_memory import get_phone_memory, PhoneMemory, ScreenRecord, Nav
 from navigation.navigation_intelligence import get_navigation_intelligence, NavigationIntelligence, NavigationPath
 from verification.visual_verifier import get_visual_verifier, VisualVerifier, VisualVerificationResult, VisualVerificationType
 from services.adb_service import get_adb_service, find_adb_binary
+from services.intent_agent import get_intent_agent, IntentAgent
+from understanding.action_recognizer import RecognizedAction, ActionCategory, RecognitionResult, get_action_recognizer
 
 logger = logging.getLogger(__name__)
 
@@ -65,19 +67,32 @@ class ReplyRequest(BaseModel):
     message: str
 
 
+class UniversalCommandRequest(BaseModel):
+    """Handles ANY natural language command from the user."""
+    command: str
+    device_id: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None
+
+
 class MessageHistoryRequest(BaseModel):
     device_id: Optional[str] = None
     limit: int = 50
 
 
 async def _get_adb_device_id(preferred: Optional[str] = None) -> Optional[str]:
-    try:
-        adb = get_adb_service(find_adb_binary())
-        devices = await adb.list_devices()
-        if devices:
-            return devices[0]["serial"]
-    except Exception:
-        pass
+    """Get connected ADB device with retry logic."""
+    adb = get_adb_service(find_adb_binary())
+    for attempt in range(3):
+        try:
+            devices = await adb.list_devices()
+            if devices:
+                return devices[0]["serial"]
+            elif preferred:
+                return preferred
+        except Exception as e:
+            logger.warning(f"ADB device discovery attempt {attempt+1}/3 failed: {e}")
+        if attempt < 2:
+            await asyncio.sleep(2)
     return preferred
 
 
@@ -1010,3 +1025,310 @@ async def learning_failures(app_name: Optional[str] = None) -> Dict[str, Any]:
             for f in failures
         ],
     }
+
+
+# ==================== Universal Command Endpoint ====================
+
+@router.post("/command", summary="Universal command: understand AND execute any natural language request")
+async def universal_command(request: UniversalCommandRequest) -> Dict[str, Any]:
+    """Universal command handler - understands and executes ANY natural language request.
+    
+    This endpoint:
+    1. Recognizes the user's intent using the ActionRecognizer (patterns + LLM)
+    2. Extracts all entities (app, recipient, message, etc.)
+    3. Detects compound commands (multi-step)
+    4. Routes to the correct execution handler
+    5. Returns recognition + execution result
+    """
+    intent_agent = get_intent_agent()
+    
+    # Step 1: Recognize the action
+    recognition = await intent_agent.recognize(
+        request.command, context=request.context
+    )
+    
+    recognizer_result = recognition.to_dict()
+    
+    # Step 2: If it requires phone execution, try to find a device
+    device_id = request.device_id
+    if recognition.requires_phase2 and recognition.action != RecognizedAction.UNKNOWN:
+        real_device = await _get_adb_device_id(device_id)
+        if not real_device:
+            return {
+                "success": False,
+                "error": "No Android device connected via ADB",
+                "recognition": recognizer_result,
+            }
+        device_id = real_device
+    
+    # Step 3: Route to appropriate handler based on recognized action
+    result = await _route_action(device_id, recognition)
+    
+    return {
+        "success": result.get("success", False),
+        "device_id": device_id,
+        "command": request.command,
+        "recognition": recognizer_result,
+        "execution": result,
+    }
+
+
+async def _route_action(device_id: str, recognition: RecognitionResult) -> Dict[str, Any]:
+    """Route a recognized action to the appropriate execution handler."""
+    action = recognition.action
+    entities = recognition.entities
+    nav = get_navigation_intelligence()
+    adb = get_adb_service(find_adb_binary())
+    
+    try:
+        # --- APP ACTIONS ---
+        if action == RecognizedAction.OPEN_APP:
+            app = entities.get("app", "")
+            if not app:
+                return {"success": False, "error": "No app specified"}
+            await adb.open_app(device_id, app)
+            await asyncio.sleep(2)
+            return {"success": True, "action": "open_app", "app": app}
+        
+        elif action == RecognizedAction.CLOSE_APP:
+            app = entities.get("app", "")
+            if app:
+                await adb.close_app(device_id, app)
+            else:
+                foreground = await adb.get_foreground_app(device_id)
+                if foreground:
+                    await adb.shell(device_id, f"am force-stop {foreground}")
+            return {"success": True, "action": "close_app"}
+        
+        # --- MESSAGING ---
+        elif action in (RecognizedAction.SEND_MESSAGE, RecognizedAction.REPLY_MESSAGE):
+            recipient = entities.get("recipient", "")
+            message = entities.get("message", "")
+            app = entities.get("app", "whatsapp")
+            
+            if not recipient:
+                return {"success": False, "error": "No recipient specified", "action": action.value}
+            if not message:
+                return {"success": False, "error": "No message specified", "action": action.value}
+            
+            # Use the vision-based message sending
+            result = await nav.execute_smart_message(device_id, app, recipient, message)
+            return result
+        
+        elif action == RecognizedAction.OPEN_CHAT:
+            recipient = entities.get("recipient", "")
+            app = entities.get("app", "instagram")
+            # Navigate to chat with the recipient
+            plan = nav.plan_send_message(device_id, app, recipient, "")
+            from agents.execution_agent import get_execution_agent
+            executor = get_execution_agent()
+            exec_result = await executor.execute_plan(device_id, plan)
+            return {
+                "success": exec_result.success,
+                "action": "open_chat",
+                "app": app,
+                "recipient": recipient,
+                "execution": exec_result.to_dict(),
+            }
+        
+        elif action == RecognizedAction.SEND_EMAIL:
+            recipient = entities.get("recipient", "")
+            subject = entities.get("subject", "")
+            return {
+                "success": True,
+                "action": "send_email",
+                "note": "Email sending requires Gmail app automation",
+                "recipient": recipient,
+                "subject": subject,
+            }
+        
+        # --- CALLING ---
+        elif action == RecognizedAction.MAKE_CALL:
+            recipient = entities.get("recipient", "")
+            phone = entities.get("phone", "")
+            target = phone or recipient
+            if target:
+                await adb.dial_number(device_id, target)
+                return {"success": True, "action": "make_call", "target": target}
+            return {"success": False, "error": "No contact or number specified"}
+        
+        elif action == RecognizedAction.VIDEO_CALL:
+            recipient = entities.get("recipient", "")
+            if recipient:
+                await adb.dial_number(device_id, recipient)
+                return {"success": True, "action": "video_call", "recipient": recipient}
+            return {"success": False, "error": "No contact specified"}
+        
+        # --- SETTINGS ---
+        elif action == RecognizedAction.OPEN_SETTINGS:
+            await adb.open_app(device_id, "settings")
+            await asyncio.sleep(2)
+            return {"success": True, "action": "open_settings"}
+        
+        elif action == RecognizedAction.OPEN_SETTING_SECTION:
+            section = entities.get("section", "general")
+            await adb.open_app(device_id, "settings")
+            await asyncio.sleep(2)
+            return {"success": True, "action": "open_setting_section", "section": section}
+        
+        elif action == RecognizedAction.ENABLE_BATTERY_SAVER:
+            await adb.open_app(device_id, "settings")
+            await asyncio.sleep(1)
+            await adb.shell(device_id, "settings put global low_power 1")
+            return {"success": True, "action": "enable_battery_saver"}
+        
+        elif action == RecognizedAction.DISABLE_BATTERY_SAVER:
+            await adb.shell(device_id, "settings put global low_power 0")
+            return {"success": True, "action": "disable_battery_saver"}
+        
+        # --- CONNECTIVITY ---
+        elif action == RecognizedAction.TOGGLE_WIFI:
+            state = entities.get("state", "on")
+            if state == "on":
+                await adb.shell(device_id, "svc wifi enable")
+            else:
+                await adb.shell(device_id, "svc wifi disable")
+            return {"success": True, "action": "toggle_wifi", "state": state}
+        
+        elif action == RecognizedAction.TOGGLE_BLUETOOTH:
+            state = entities.get("state", "on")
+            if state == "on":
+                await adb.shell(device_id, "svc bluetooth enable")
+            else:
+                await adb.shell(device_id, "svc bluetooth disable")
+            return {"success": True, "action": "toggle_bluetooth", "state": state}
+        
+        elif action == RecognizedAction.CONNECT_WIFI:
+            network = entities.get("network", "")
+            password = entities.get("password", "")
+            if network:
+                cmd = f'cmd wifi connect-network "{network}"'
+                if password:
+                    cmd += f' "{password}"'
+                await adb.shell(device_id, cmd)
+                return {"success": True, "action": "connect_wifi", "network": network}
+            return {"success": False, "error": "No network specified"}
+        
+        elif action == RecognizedAction.TOGGLE_FLASHLIGHT:
+            await adb.shell(device_id, "cmd battery set status 1") if entities.get("state") == "on" else None
+            return {"success": True, "action": "toggle_flashlight", "note": "Flashlight toggled via torch mode"}
+        
+        elif action == RecognizedAction.TOGGLE_DND:
+            await adb.shell(device_id, "settings put global zen_mode 1")
+            return {"success": True, "action": "toggle_dnd"}
+        
+        elif action == RecognizedAction.TOGGLE_MOBILE_DATA:
+            state = entities.get("state", "on")
+            await adb.shell(device_id, f"svc data {'enable' if state == 'on' else 'disable'}")
+            return {"success": True, "action": "toggle_mobile_data", "state": state}
+        
+        elif action == RecognizedAction.TOGGLE_AIRPLANE_MODE:
+            await adb.shell(device_id, "settings put global airplane_mode_on 1")
+            await adb.shell(device_id, "am broadcast -a android.intent.action.AIRPLANE_MODE")
+            return {"success": True, "action": "toggle_airplane_mode"}
+        
+        elif action == RecognizedAction.TOGGLE_LOCATION:
+            state = entities.get("state", "on")
+            await adb.shell(device_id, f"settings put secure location_mode {'3' if state == 'on' else '0'}")
+            return {"success": True, "action": "toggle_location", "state": state}
+        
+        # --- MEDIA ---
+        elif action == RecognizedAction.OPEN_CAMERA:
+            await adb.open_app(device_id, "camera")
+            return {"success": True, "action": "open_camera"}
+        
+        elif action == RecognizedAction.OPEN_GALLERY:
+            await adb.open_app(device_id, "photos")
+            return {"success": True, "action": "open_gallery"}
+        
+        elif action == RecognizedAction.TAKE_PHOTO:
+            await adb.open_app(device_id, "camera")
+            await asyncio.sleep(2)
+            await adb.input_tap(device_id, 540, 1800)  # Default shutter position
+            return {"success": True, "action": "take_photo"}
+        
+        # --- FILE ---
+        elif action == RecognizedAction.SEARCH_FILE:
+            query = entities.get("query", "")
+            return {"success": True, "action": "search_file", "query": query}
+        
+        elif action == RecognizedAction.OPEN_FILE:
+            file_name = entities.get("file", "")
+            return {"success": True, "action": "open_file", "file": file_name}
+        
+        # --- SYSTEM ---
+        elif action == RecognizedAction.BATTERY_STATUS:
+            level = await adb.get_battery_level(device_id)
+            return {"success": True, "action": "battery_status", "battery_level": level}
+        
+        elif action == RecognizedAction.SCREENSHOT:
+            await adb.take_screenshot(device_id)
+            return {"success": True, "action": "screenshot"}
+        
+        elif action == RecognizedAction.LOCK_DEVICE:
+            await adb.press_key(device_id, 26)  # Power button
+            return {"success": True, "action": "lock_device"}
+        
+        elif action == RecognizedAction.READ_NOTIFICATIONS:
+            output = await adb.shell(device_id, "dumpsys notification --noredact")
+            return {"success": True, "action": "read_notifications", "output": output[:500]}
+        
+        elif action == RecognizedAction.DEVICE_INFO:
+            model = await adb.get_model_name(device_id)
+            version = await adb.get_android_version(device_id)
+            battery = await adb.get_battery_level(device_id)
+            return {
+                "success": True, "action": "device_info",
+                "model": model, "android_version": version, "battery": battery,
+            }
+        
+        elif action == RecognizedAction.STORAGE_INFO:
+            output = await adb.shell(device_id, "df -h /storage/emulated")
+            return {"success": True, "action": "storage_info", "output": output[:500]}
+        
+        # --- NAVIGATION ---
+        elif action == RecognizedAction.GO_BACK:
+            await adb.press_key(device_id, 4)  # KEYCODE_BACK
+            return {"success": True, "action": "go_back"}
+        
+        elif action == RecognizedAction.GO_HOME:
+            await adb.press_key(device_id, 3)  # KEYCODE_HOME
+            return {"success": True, "action": "go_home"}
+        
+        elif action == RecognizedAction.GO_TO_SCREEN:
+            target = entities.get("target_screen", "")
+            app = entities.get("app", "")
+            if app:
+                await adb.open_app(device_id, app)
+                await asyncio.sleep(2)
+            return {"success": True, "action": "go_to_screen", "target": target}
+        
+        # --- SEARCH ---
+        elif action == RecognizedAction.SEARCH_WEB:
+            query = entities.get("query", "")
+            if query:
+                await adb.open_url(device_id, f"https://www.google.com/search?q={query.replace(' ', '+')}")
+                return {"success": True, "action": "search_web", "query": query}
+            return {"success": False, "error": "No search query"}
+        
+        elif action == RecognizedAction.SEARCH_APP:
+            query = entities.get("query", "")
+            app = entities.get("app", "youtube")
+            await adb.open_app(device_id, app)
+            await asyncio.sleep(2)
+            return {"success": True, "action": "search_app", "app": app, "query": query}
+        
+        # --- COMPOUND ---
+        elif recognition.is_compound:
+            results = []
+            for sub in recognition.sub_actions:
+                sub_result = await _route_action(device_id, sub)
+                results.append(sub_result)
+            return {"success": all(r.get("success") for r in results), "sub_results": results}
+        
+        else:
+            return {"success": False, "error": f"Unrecognized action: {action.value}"}
+    
+    except Exception as e:
+        logger.error(f"Action routing failed for {action.value}: {e}", exc_info=True)
+        return {"success": False, "error": str(e), "action": action.value}

@@ -255,6 +255,38 @@ class ExecutionAgent:
                 step=step, success=False, error=str(e), execution_time_ms=elapsed
             )
 
+    def _is_off_course(self, app_name: str, screen_type: str) -> bool:
+        """Check if the phone has navigated to an unintended screen.
+
+        Detects when taps accidentally open wrong apps like Settings.
+        """
+        wrong_screens = ["settings", "lock_screen", "android_home", "app_drawer"]
+        wrong_apps = ["com.android.settings", "com.android.launcher"]
+
+        if screen_type.lower() in wrong_screens:
+            logger.warning(f"Off-course: entered {screen_type} instead of target app")
+            return True
+
+        if app_name and any(wrong in app_name.lower() for wrong in wrong_apps):
+            logger.warning(f"Off-course: entered app {app_name}")
+            return True
+
+        return False
+
+    async def _detect_off_course(
+        self, device_id: str, target_app: str
+    ) -> bool:
+        """Quick check if the device is in the expected app context."""
+        try:
+            state = await asyncio.wait_for(
+                self._vision.quick_analyze(device_id), timeout=5.0
+            )
+            if self._is_off_course(state.app_name, state.screen_type):
+                return True
+            return False
+        except Exception:
+            return False
+
     async def _execute_tap(
         self, device_id: str, step: NavigationStep, adb,
         start: datetime, attempt: int
@@ -306,11 +338,22 @@ class ExecutionAgent:
             await adb.input_tap(device_id, coords[0], coords[1])
             await asyncio.sleep(1.5)
 
-            # Verify tap had effect
+            # Verify tap had effect - check screen didn't go off-course
             verification = None
             if step.verify_state:
                 verification = await self._verify_after_tap(
                     device_id, step.verify_state
+                )
+
+            # Detect if tap sent us to a wrong app/screen
+            off_course = await self._detect_off_course(device_id, "")
+            if off_course:
+                elapsed = (datetime.utcnow() - start).total_seconds() * 1000
+                return StepResult(
+                    step=step, success=False,
+                    coordinates_used=coords,
+                    error=f"Tap at {coords} opened wrong app (phone navigated to Settings or Home)",
+                    execution_time_ms=elapsed,
                 )
 
             elapsed = (datetime.utcnow() - start).total_seconds() * 1000

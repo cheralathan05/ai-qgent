@@ -198,35 +198,124 @@ class VisionAgent:
     async def analyze_screen(
         self, device_id: str, foreground_app: Optional[str] = None
     ) -> ScreenState:
-        """Full screen analysis: capture + OCR + YOLO + classification."""
-        start = datetime.utcnow()
-        state = ScreenState(device_id=device_id)
+        """Full screen analysis: capture + OCR + YOLO + classification.
 
-        # Step 1: Capture screenshot
-        capture = await self._capture.capture_from_adb(device_id)
-        if not capture.success or capture.image is None:
-            state.error = f"Screen capture failed: {capture.error}"
-            state.analysis_time_ms = (datetime.utcnow() - start).total_seconds() * 1000
+        Has a built-in timeout to prevent stalls. Uses positional sanity checks
+        to filter out impossible element detections.
+        """
+        start = datetime.utcnow()
+
+        async def _do_analysis():
+            state = ScreenState(device_id=device_id)
+
+            # Step 1: Capture screenshot
+            capture = await self._capture.capture_from_adb(device_id)
+            if not capture.success or capture.image is None:
+                state.error = f"Screen capture failed: {capture.error}"
+                return state
+
+            state.image_width = capture.width
+            state.image_height = capture.height
+            state.screenshot_path = capture.filepath or ""
+
+            # Step 2: Run OCR (with per-engine timeout)
+            try:
+                ocr_result = await asyncio.wait_for(
+                    self._ocr.extract_text(capture.image), timeout=15.0
+                )
+                state.ocr_texts = ocr_result.texts
+                state.full_ocr_text = ocr_result.full_text
+                state.ocr_engine = ocr_result.engine_used
+            except asyncio.TimeoutError:
+                logger.warning("OCR timed out after 15s, continuing without OCR")
+
+            # Step 3: Run YOLO detection (with timeout)
+            try:
+                yolo_result = await asyncio.wait_for(
+                    self._yolo.detect_elements(capture.image), timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("YOLO detection timed out after 10s")
+                yolo_result = YOLOResult()
+
+            # Step 4: Run contour-based UI detection (complementary, fast)
+            try:
+                ui_result = await self._ui_detector.detect_elements(capture.image)
+            except Exception:
+                ui_result = UIDetectionResult()
+
+            # Step 5: Merge detections from all sources with positional sanity
+            state.elements = self._merge_detections(yolo_result, ui_result, ocr_result, state.image_height)
+
+            # Categorize elements
+            for e in state.elements:
+                if e.element_type == "button":
+                    state.buttons.append(e)
+                elif e.element_type == "input_field":
+                    state.inputs.append(e)
+                elif e.element_type in ("icon", "back_button", "menu_button", "send_button"):
+                    state.icons.append(e)
+                elif e.element_type == "search_bar":
+                    state.search_bars.append(e)
+                elif e.element_type == "send_button":
+                    state.send_buttons.append(e)
+                elif e.element_type == "back_button":
+                    state.back_buttons.append(e)
+                elif e.element_type == "text_label":
+                    state.text_labels.append(e)
+
+            # Step 6: Classify screen
+            try:
+                classification = await asyncio.wait_for(
+                    self._classifier.classify(
+                        image=capture.image,
+                        foreground_app=foreground_app,
+                        text_content=state.full_ocr_text,
+                        ui_result=ui_result,
+                    ),
+                    timeout=5.0,
+                )
+                state.app_name = classification.app_name or foreground_app or ""
+                state.screen_type = classification.screen_type.value
+                state.screen_name = classification.screen_name or classification.screen_type.value
+                state.classification_confidence = classification.confidence
+            except asyncio.TimeoutError:
+                logger.warning("Screen classification timed out after 5s")
+                if foreground_app:
+                    state.app_name = foreground_app
+                state.screen_type = "unknown"
+
+            state.success = True
             return state
 
-        state.image_width = capture.width
-        state.image_height = capture.height
-        state.screenshot_path = capture.filepath or ""
+        try:
+            state = await asyncio.wait_for(_do_analysis(), timeout=45.0)
+        except asyncio.TimeoutError:
+            state = ScreenState(device_id=device_id)
+            state.error = "Full screen analysis timed out after 45s"
+            logger.error(f"Screen analysis timed out for {device_id}")
+            # Fall back to quick analysis
+            try:
+                quick = await asyncio.wait_for(self.quick_analyze(device_id), timeout=20.0)
+                state = quick
+                state.success = True
+                state.error = ""
+                state.analysis_time_ms = (datetime.utcnow() - start).total_seconds() * 1000
+                return state
+            except Exception:
+                pass
 
-        # Step 2: Run OCR
-        ocr_result = await self._ocr.extract_text(capture.image)
-        state.ocr_texts = ocr_result.texts
-        state.full_ocr_text = ocr_result.full_text
-        state.ocr_engine = ocr_result.engine_used
+        state.analysis_time_ms = (datetime.utcnow() - start).total_seconds() * 1000
 
-        # Step 3: Run YOLO detection
-        yolo_result = await self._yolo.detect_elements(capture.image)
+        if state.success:
+            logger.info(
+                f"VisionAgent: analyzed {state.image_width}x{state.image_height} screen "
+                f"in {state.analysis_time_ms:.0f}ms - app={state.app_name}, "
+                f"screen={state.screen_type}, elements={len(state.elements)}, "
+                f"ocr_texts={len(state.ocr_texts)}"
+            )
 
-        # Step 4: Run contour-based UI detection (complementary)
-        ui_result = await self._ui_detector.detect_elements(capture.image)
-
-        # Step 5: Merge detections from all sources
-        state.elements = self._merge_detections(yolo_result, ui_result, ocr_result, state.image_height)
+        return state
 
         # Categorize elements
         for e in state.elements:
@@ -344,6 +433,46 @@ class VisionAgent:
 
         return None
 
+    def _is_plausible_position(
+        self, element_type: str, x: int, y: int, w: int, h: int, img_w: int, img_h: int
+    ) -> bool:
+        """Check if an element position is plausible for its type.
+
+        Filters out detections in impossible locations (e.g. search bar in bottom half).
+        """
+        # Elements must be within image bounds
+        if x < 0 or y < 0 or w <= 0 or h <= 0:
+            return False
+        if x + w > img_w or y + h > img_h:
+            return False
+
+        # Type-specific position constraints
+        if element_type in ("search_bar", "search"):
+            # Search bars are always in top 25% of screen
+            if y > img_h * 0.25:
+                return False
+        elif element_type in ("input_field", "message_input"):
+            # Input fields are typically in bottom 40% of screen
+            if y < img_h * 0.3:
+                return False
+        elif element_type == "send_button":
+            # Send buttons are in bottom right area
+            if y < img_h * 0.6 or x < img_w * 0.5:
+                return False
+        elif element_type in ("nav_bar", "status_bar"):
+            # Nav bars at very bottom, status bars at very top
+            if element_type == "status_bar" and y > img_h * 0.05:
+                return False
+            if element_type == "nav_bar" and y < img_h * 0.9:
+                return False
+
+        # Filter out unreasonably large elements
+        element_ratio = (w * h) / (img_w * img_h)
+        if element_ratio > 0.4:
+            return False
+
+        return True
+
     def _merge_detections(
         self,
         yolo_result: YOLOResult,
@@ -355,6 +484,12 @@ class VisionAgent:
         elements: List[DetectedElement] = []
         seen_positions: set = set()
 
+        img_w = 0
+        if yolo_result.image_width:
+            img_w = yolo_result.image_width
+        elif ui_result.elements:
+            img_w = max(e.x + e.w for e in ui_result.elements) + 200
+
         def pos_key(x, y, w, h):
             return (x // 20, y // 20, w // 20, h // 20)
 
@@ -363,6 +498,8 @@ class VisionAgent:
             key = pos_key(det.x, det.y, det.w, det.h)
             if key not in seen_positions:
                 seen_positions.add(key)
+                if not self._is_plausible_position(det.class_name, det.x, det.y, det.w, det.h, img_w or 2000, img_h):
+                    continue
                 elements.append(DetectedElement(
                     element_type=det.class_name,
                     x=det.x, y=det.y, w=det.w, h=det.h,
@@ -375,6 +512,8 @@ class VisionAgent:
             key = pos_key(elem.x, elem.y, elem.w, elem.h)
             if key not in seen_positions:
                 seen_positions.add(key)
+                if not self._is_plausible_position(elem.element_type, elem.x, elem.y, elem.w, elem.h, img_w or 2000, img_h):
+                    continue
                 elements.append(DetectedElement(
                     element_type=elem.element_type,
                     x=elem.x, y=elem.y, w=elem.w, h=elem.h,
@@ -391,6 +530,8 @@ class VisionAgent:
                 # Classify text region as potential UI element
                 element_type = self._classify_text_as_element(dt.text, dt.x, dt.y, dt.w, dt.h, img_h)
                 if element_type != "text_label":
+                    if not self._is_plausible_position(element_type, dt.x, dt.y, dt.w, dt.h, img_w or 2000, img_h):
+                        continue
                     seen_positions.add(key)
                     elements.append(DetectedElement(
                         element_type=element_type,

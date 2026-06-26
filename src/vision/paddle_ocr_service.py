@@ -323,20 +323,16 @@ class PaddleOCRService:
         gray, binary = self._preprocess_for_ocr(image)
 
         # Strategy 1: PaddleOCR on original (best accuracy)
+        # NOTE: Single pass only - multiple redundant passes cause extreme slowdown
         if "paddleocr" in self._available_engines:
             reader = self._get_paddle_reader()
             if reader and reader is not False:
-                logger.info("OCR: Trying PaddleOCR on original image...")
+                logger.info("OCR: Running PaddleOCR (single pass)...")
                 texts = self._paddle_extract(image, reader)
 
                 if not texts:
-                    logger.info("OCR: PaddleOCR found nothing, trying preprocessed...")
-                    texts = self._paddle_extract(
-                        cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), reader
-                    )
-
-                if not texts:
-                    logger.info("OCR: Trying PaddleOCR on binary image...")
+                    # One retry with preprocessed if first pass found nothing
+                    logger.info("OCR: PaddleOCR found nothing, retrying with preprocessed...")
                     texts = self._paddle_extract(
                         cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR), reader
                     )
@@ -359,15 +355,15 @@ class PaddleOCRService:
                         confidence_avg=avg_conf,
                     )
 
-        # Strategy 2: EasyOCR fallback
+        # Strategy 2: EasyOCR fallback (single pass)
         if "easyocr" in self._available_engines:
             reader = self._get_easyocr_reader()
             if reader and reader is not False:
-                logger.info("OCR: Trying EasyOCR on original image...")
+                logger.info("OCR: Running EasyOCR (single pass)...")
                 texts = self._easyocr_extract(image, reader)
 
                 if not texts:
-                    logger.info("OCR: Trying EasyOCR on preprocessed...")
+                    logger.info("OCR: EasyOCR found nothing, retrying with preprocessed...")
                     texts = self._easyocr_extract(
                         cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), reader
                     )

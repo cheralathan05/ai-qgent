@@ -41,6 +41,7 @@ from config import Config
 from api.life_direction import router as life_direction_router
 from api.v1 import router as v1_router
 from api.apa_os_api import router as apa_os_router
+from api.phase2 import router as phase2_router
 
 # Layer imports
 from screen_memory import get_screen_memory
@@ -1595,13 +1596,24 @@ async def phase2_open_chat(
     session=Depends(get_session),
 ) -> Dict[str, Any]:
     await bootstrap_phase1_environment()
-    cmd_text = request.command or "Open Guru Chat"
+    cmd_text = request.command or "Open chat on WhatsApp"
     text_lower = cmd_text.lower()
     app = "whatsapp" if "whatsapp" in text_lower else "instagram"
-    navigation = get_navigation_engine()
-    intent_result = type("obj", (object,), {"intent": type("e", (object,), {"value": "send_message"})(), "slots": {"app": app, "recipient": "guru", "message": None}})()
-    steps = navigation.create_workflow_steps(intent_result)
-    return {"success": True, "intent": "send_message", "target": "guru", "app": app, "steps": steps, "message": f"Navigated to Guru chat on {app}"}
+    recipient = "guru" if "guru" in text_lower else None
+    
+    real_device = await _get_adb_device_id(request.device_id)
+    if not real_device:
+        return {"success": False, "error": "No Android device connected via ADB"}
+    
+    adb = get_adb_service(find_adb_binary())
+    await adb.open_app(real_device, app)
+    await asyncio.sleep(3)
+    
+    return {
+        "success": True, "intent": "send_message", "target": recipient or "unknown",
+        "app": app, "device_id": real_device,
+        "message": f"Opened {app} on device",
+    }
 
 
 @app.post("/api/phase2/reply-message", tags=["Phase 2"])
@@ -1610,11 +1622,20 @@ async def phase2_reply_message(
     session=Depends(get_session),
 ) -> Dict[str, Any]:
     cmd_text = request.command or "Reply Good Morning"
-    verifier = get_action_verifier()
-    navigation = get_navigation_engine()
-    intent_result = type("obj", (object,), {"intent": type("e", (object,), {"value": "send_message"})(), "slots": {"message": "Good Morning", "recipient": "guru", "app": "whatsapp"}})()
-    steps = navigation.create_workflow_steps(intent_result)
-    return {"success": True, "intent": "send_message", "message": "Good Morning", "steps": steps, "verification": {"type": "verify_sent", "status": "pending"}}
+    real_device = await _get_adb_device_id(request.device_id)
+    if not real_device:
+        return {"success": False, "error": "No Android device connected via ADB"}
+    
+    adb = get_adb_service(find_adb_binary())
+    await adb.input_text(real_device, cmd_text.replace("Reply ", "").replace("reply ", ""))
+    await asyncio.sleep(0.5)
+    await adb.press_key(real_device, 66)  # KEYCODE_ENTER
+    
+    return {
+        "success": True, "intent": "send_message",
+        "message": cmd_text, "device_id": real_device,
+        "verification": {"type": "verify_sent", "status": "pending"},
+    }
 
 
 @app.get("/api/phase2/navigate-screens", tags=["Phase 2"])
@@ -1857,6 +1878,9 @@ app.include_router(v1_router)
 
 # Include APA-OS Universal API routes
 app.include_router(apa_os_router)
+
+# Include Phase 2 Vision-Based Agentic Automation routes (mounted under /api/phase2)
+app.include_router(phase2_router, prefix="/api/phase2")
 
 
 # ==================== App Registry APIs (Dynamic Discovery) ====================

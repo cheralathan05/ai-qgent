@@ -21,10 +21,11 @@ api.interceptors.response.use(
     const originalRequest = error.config;
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
+      const refreshToken = localStorage.getItem('refreshToken');
+      if (!refreshToken) {
+        return Promise.reject(error);
+      }
       try {
-        const refreshToken = localStorage.getItem('refreshToken');
-        if (!refreshToken) throw new Error('No refresh token available');
-
         const res = await axios.post(
           `${api.defaults.baseURL}/api/auth/refresh`,
           { refresh_token: refreshToken }

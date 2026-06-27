@@ -3,7 +3,7 @@ APA-OS Authentication API - Complete auth endpoints matching Phase 1 spec
 POST /api/auth/register, GET /api/auth/verify, POST /api/auth/login, etc.
 """
 
-from fastapi import APIRouter, HTTPException, Query, Body, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Request
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -11,6 +11,7 @@ import logging
 import secrets
 
 from services.auth_service import get_auth_service
+from services.rate_limiter import rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ async def verify_email(token: str = Query(...)):
 
 
 @router.post("/login")
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, _: None = Depends(rate_limit(10, 300))):
     """Authenticate user and return tokens"""
     service = get_auth_service()
     result = service.login(
@@ -90,21 +91,21 @@ async def login(request: LoginRequest):
         user = db.query(User).filter(User.id == result.user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-            return {
-                "success": True,
-                "message": result.message,
-                "user": {
-                    "id": user.id,
-                    "full_name": user.full_name,
-                    "email": user.email,
-                    "email_verified": user.email_verified,
-                    "created_at": user.created_at.isoformat() if user.created_at else None,
-                },
-                "accessToken": result.access_token,
-                "refreshToken": result.refresh_token,
-                "session_id": result.session_id,
-                "expires_at": result.expires_at.isoformat() if result.expires_at else None,
-            }
+        return {
+            "success": True,
+            "message": result.message,
+            "user": {
+                "id": user.id,
+                "full_name": user.full_name,
+                "email": user.email,
+                "email_verified": user.email_verified,
+                "created_at": user.created_at.isoformat() if user.created_at else None,
+            },
+            "accessToken": result.access_token,
+            "refreshToken": result.refresh_token,
+            "session_id": result.session_id,
+            "expires_at": result.expires_at.isoformat() if result.expires_at else None,
+        }
     finally:
         db.close()
 
@@ -133,11 +134,11 @@ async def logout(session_id: str = Body(..., embed=True)):
 
 
 @router.post("/forgot-password")
-async def forgot_password(request: ForgotPasswordRequest):
+async def forgot_password(request: ForgotPasswordRequest, _: None = Depends(rate_limit(3, 600))):
     """Send password reset email"""
     service = get_auth_service()
     result = service.forgot_password(request.email)
-    return {"success": True, "message": result.message, "token": result.token}
+    return {"success": True, "message": result.message}
 
 
 @router.get("/reset-password/verify")

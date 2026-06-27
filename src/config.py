@@ -206,7 +206,11 @@ class Config:
         from_addr=SMTP_FROM,
     )
 
-    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8080")
+
+    # JWT
+    JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-in-production-apa-os-2024")
+    JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
     # API
     API_HOST = _get_env_value("API_HOST", "HOST", default="0.0.0.0")

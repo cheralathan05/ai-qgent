@@ -102,13 +102,13 @@ class AuthService:
             if pw_error:
                 return AuthResult(success=False, message=pw_error)
 
-            # Create user
+            # Create user (auto-verified)
             user = User(
                 id=secrets.token_urlsafe(16),
                 full_name=name,
                 email=email.lower(),
                 password_hash=hash_password(password),
-                email_verified=False,
+                email_verified=True,
                 verification_token=None,
                 reset_token=None,
                 reset_token_expiry=None,
@@ -117,33 +117,10 @@ class AuthService:
                 status="active",
             )
             session.add(user)
-            session.flush()
-
-            # Generate email verification token
-            verification_token = generate_token()
-            user.verification_token = verification_token
-
-            # Still create a verification record for auditing
-            verification = EmailVerification(
-                id=secrets.token_urlsafe(16),
-                user_id=user.id,
-                token=verification_token,
-                email=email,
-                verified=False,
-                expires_at=datetime.utcnow() + timedelta(hours=24),
-                created_at=datetime.utcnow(),
-            )
-            session.add(verification)
-
-            # Send verification email
-            verification_link = f"{Config.FRONTEND_URL}/verify-email?token={verification_token}"
-            from services.email_service import EmailService
-            EmailService().send_verification(email, verification_link)
-
             session.commit()
 
-            logger.info(f"User signed up: {user.id} - {email}")
-            return AuthResult(success=True, message="Account created. Check your email.", user_id=user.id)
+            logger.info(f"User signed up (auto-verified): {user.id} - {email}")
+            return AuthResult(success=True, message="Account created successfully", user_id=user.id)
 
         except Exception as e:
             session.rollback()

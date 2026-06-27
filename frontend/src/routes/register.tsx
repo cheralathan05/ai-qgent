@@ -79,8 +79,8 @@ function RegisterPage() {
             </div>
             <h2 className="font-display text-[20px] tracking-tight">Account created</h2>
             <p className="mt-2 text-[13px] text-muted-foreground leading-relaxed">
-              Check your email to verify your account.<br />
-              The verification link expires in 24 hours.
+              Your account has been created successfully.<br />
+              You can now sign in.
             </p>
             <Link
               to="/login"

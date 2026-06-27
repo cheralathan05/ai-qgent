@@ -1,6 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { ApaOrb } from "@/components/apa/ApaOrb";
+import { authApi } from "@/lib/api/auth";
+import { AxiosError } from "axios";
 
 export const Route = createFileRoute("/forgot-password")({
   head: () => ({ meta: [{ title: "Reset password — APA-OS" }] }),
@@ -13,6 +15,7 @@ function ForgotPage() {
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [focusedField, setFocusedField] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -20,15 +23,25 @@ function ForgotPage() {
     e.preventDefault();
     if (!email) return;
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1000));
-    setLoading(false);
-    setSent(true);
+    setError(null);
+    try {
+      await authApi.forgotPassword(email);
+      setSent(true);
+    } catch (err) {
+      const axiosErr = err as AxiosError<{ detail: string }>;
+      if (axiosErr.response?.data?.detail) {
+        setError(axiosErr.response.data.detail);
+      } else {
+        setError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <div className="min-h-screen bg-background text-foreground grain flex items-center justify-center px-6 gradient-mesh">
       <div className={`w-full max-w-[420px] transition-all duration-700 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"}`}>
-        {/* Logo */}
         <Link to="/" className="flex flex-col items-center mb-10">
           <ApaOrb size={50} state="idle" />
           <h1 className="mt-3 font-display text-[22px] tracking-tight">
@@ -37,7 +50,6 @@ function ForgotPage() {
         </Link>
 
         {sent ? (
-          /* Success state */
           <div className="glass rounded-2xl p-8 text-center card-expand">
             <div className="mx-auto w-14 h-14 rounded-full bg-[color:var(--color-success)]/10 flex items-center justify-center mb-5">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -58,10 +70,15 @@ function ForgotPage() {
             </button>
           </div>
         ) : (
-          /* Form state */
           <>
             <h1 className="font-display text-[28px] tracking-tight text-center">Reset password.</h1>
             <p className="mt-2 text-[13px] text-muted-foreground text-center">We&apos;ll send you a magic link.</p>
+
+            {error && (
+              <div className="mt-4 p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-[12px] text-destructive">
+                {error}
+              </div>
+            )}
 
             <form onSubmit={handleSubmit} className="mt-8 space-y-5">
               <div className="relative">

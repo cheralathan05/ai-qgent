@@ -3,7 +3,7 @@ Production REST APIs
 Complete API surface for APA-OS Backend
 """
 
-from fastapi import FastAPI, HTTPException, Query, Depends, BackgroundTasks, APIRouter
+from fastapi import FastAPI, HTTPException, Query, Depends, BackgroundTasks, APIRouter, WebSocket, WebSocketDisconnect
 from fastapi import UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -37,11 +37,14 @@ from services.redis_service import get_redis_service
 from services.app_resolver import get_app_resolver
 from services.app_launch import get_app_launch_service
 from services.app_discovery import get_app_discovery_service
+from services.websocket_service import get_websocket_manager
 from config import Config
 from api.life_direction import router as life_direction_router
 from api.v1 import router as v1_router
 from api.apa_os_api import router as apa_os_router
 from api.phase2 import router as phase2_router
+from api.auth import router as auth_router
+from api.pairing import router as pairing_router
 
 # Layer imports
 from screen_memory import get_screen_memory
@@ -1879,9 +1882,48 @@ app.include_router(v1_router)
 # Include APA-OS Universal API routes
 app.include_router(apa_os_router)
 
+# Include Auth API routes
+app.include_router(auth_router)
+
+# Include Pairing API routes
+app.include_router(pairing_router)
+
 # Include Phase 2 Vision-Based Agentic Automation routes (mounted under /api/phase2)
 app.include_router(phase2_router, prefix="/api/phase2")
 
+
+# ==================== WebSocket API ====================
+
+@app.websocket("/ws/device")
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+    """Real-time device updates and command stream"""
+    from services.auth_service import get_auth_service
+    auth_service = get_auth_service()
+    user_info = auth_service.validate_token(token)
+
+    if not user_info:
+        await websocket.close(code=1008)
+        return
+
+    user_id = user_info["user_id"]
+    ws_manager = get_websocket_manager()
+    await ws_manager.connect(websocket, user_id)
+
+    try:
+        while True:
+            # Wait for messages from the client (e.g. heartbeat or a specific request)
+            data = await websocket.receive_text()
+            message = json.loads(data)
+
+            # Handle incoming messages if needed
+            if message.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "timestamp": datetime.utcnow().isoformat()})
+
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket, user_id)
+    except Exception as e:
+        logger.error(f"WebSocket error for user {user_id}: {e}")
+        ws_manager.disconnect(websocket, user_id)
 
 # ==================== App Registry APIs (Dynamic Discovery) ====================
 

@@ -2,7 +2,9 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { ApaOrb } from "@/components/apa/ApaOrb";
 import { ParticleField } from "@/components/apa/ParticleField";
+import { authApi } from "@/lib/api/auth";
 import { loginUser } from "@/lib/apa/enterprise";
+import { AxiosError } from "axios";
 
 export const Route = createFileRoute("/login")({
   head: () => ({ meta: [{ title: "Sign in — APA-OS" }] }),
@@ -25,6 +27,7 @@ function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -32,20 +35,45 @@ function LoginPage() {
     e.preventDefault();
     if (!email || !pw) return;
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1200));
-    loginUser(email.split("@")[0], email);
-    setLoading(false);
-    navigate({ to: "/pair-device" });
+    setError(null);
+    try {
+      const res = await authApi.login(email, pw, "Web Browser");
+      if (res.success) {
+        loginUser({
+          id: res.user.id,
+          full_name: res.user.full_name,
+          email: res.user.email,
+          email_verified: res.user.email_verified,
+          status: res.user.status,
+          last_login: res.user.last_login,
+          created_at: res.user.created_at,
+          accessToken: res.accessToken,
+          refreshToken: res.refreshToken,
+        });
+        navigate({ to: "/pair-device" });
+      }
+    } catch (err) {
+      const axiosErr = err as AxiosError<{ detail: string }>;
+      if (axiosErr.response?.status === 401) {
+        setError(axiosErr.response?.data?.detail || "Invalid email or password");
+      } else if (axiosErr.response?.status === 403) {
+        setError("Email not verified. Please check your inbox.");
+      } else if (axiosErr.response?.data?.detail) {
+        setError(axiosErr.response.data.detail);
+      } else {
+        setError("Connection failed. Make sure the server is running.");
+      }
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
     <div className="min-h-screen bg-background text-foreground overflow-hidden">
       <div className="flex min-h-screen">
-        {/* ─── Left Panel: Orb + Benefits ─── */}
         <div className="hidden lg:flex lg:w-[55%] relative items-center justify-center gradient-mesh">
           <ParticleField count={35} speed={0.15} opacity={0.25} />
 
-          {/* Radial glow */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="w-[600px] h-[600px] rounded-full" style={{
               background: "radial-gradient(circle, oklch(0.78 0.11 70 / 0.06) 0%, transparent 70%)",
@@ -64,7 +92,6 @@ function LoginPage() {
               </p>
             </div>
 
-            {/* Live benefits */}
             <div className="grid grid-cols-2 gap-3 w-full max-w-[420px]">
               {BENEFITS.map((b, i) => (
                 <div
@@ -81,7 +108,6 @@ function LoginPage() {
               ))}
             </div>
 
-            {/* Live status */}
             <div className={`flex items-center gap-3 text-[10px] text-muted-foreground transition-all duration-500 ${mounted ? "opacity-100" : "opacity-0"}`} style={{ transitionDelay: "800ms" }}>
               <span className="flex items-center gap-1.5">
                 <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--color-success)] apa-pulse" />
@@ -95,10 +121,8 @@ function LoginPage() {
           </div>
         </div>
 
-        {/* ─── Right Panel: Login Form ─── */}
         <div className="flex-1 flex items-center justify-center px-6 py-12 lg:px-12">
           <div className={`w-full max-w-[400px] transition-all duration-700 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"}`} style={{ transitionDelay: "200ms" }}>
-            {/* Mobile logo */}
             <div className="lg:hidden flex flex-col items-center mb-10">
               <ApaOrb size={60} state="idle" />
               <h1 className="mt-4 font-display text-[28px] tracking-tight">
@@ -116,8 +140,13 @@ function LoginPage() {
             <h1 className="font-display text-[28px] tracking-tight">Welcome back.</h1>
             <p className="mt-2 text-[13px] text-muted-foreground">Sign in to your operating system.</p>
 
+            {error && (
+              <div className="mt-4 p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-[12px] text-destructive">
+                {error}
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} className="mt-8 space-y-5">
-              {/* Email */}
               <div className="relative">
                 <label className="block">
                   <span className={`text-[9px] uppercase tracking-[0.22em] transition-colors duration-200 ${focusedField === "email" ? "text-accent" : "text-muted-foreground"}`}>
@@ -136,7 +165,6 @@ function LoginPage() {
                 </label>
               </div>
 
-              {/* Password */}
               <div className="relative">
                 <label className="block">
                   <span className={`text-[9px] uppercase tracking-[0.22em] transition-colors duration-200 ${focusedField === "password" ? "text-accent" : "text-muted-foreground"}`}>
@@ -177,7 +205,6 @@ function LoginPage() {
                 </label>
               </div>
 
-              {/* Remember me + forgot */}
               <div className="flex items-center justify-between">
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <div
@@ -201,7 +228,6 @@ function LoginPage() {
                 </Link>
               </div>
 
-              {/* Submit */}
               <button
                 type="submit"
                 disabled={!email || !pw || loading}
@@ -221,14 +247,12 @@ function LoginPage() {
               </button>
             </form>
 
-            {/* Divider */}
             <div className="my-7 flex items-center gap-3">
               <span className="flex-1 h-px bg-[var(--color-border)]" />
               <span className="text-[9px] uppercase tracking-[0.22em] text-muted-foreground/60">or continue with</span>
               <span className="flex-1 h-px bg-[var(--color-border)]" />
             </div>
 
-            {/* Social providers */}
             <div className="grid grid-cols-3 gap-3">
               {[
                 { name: "Google", icon: (
@@ -261,7 +285,6 @@ function LoginPage() {
               ))}
             </div>
 
-            {/* Security indicator */}
             <div className="mt-7 flex items-center justify-center gap-2 text-[9px] text-muted-foreground/50">
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2">
                 <rect x="3" y="7" width="10" height="7" rx="1.5" />
@@ -270,7 +293,6 @@ function LoginPage() {
               <span>End-to-end encrypted · JWT secured</span>
             </div>
 
-            {/* Register link */}
             <p className="mt-6 text-center text-[12px] text-muted-foreground">
               Don&apos;t have an account?{" "}
               <Link to="/register" className="text-accent hover:text-accent/80 transition-colors font-medium">

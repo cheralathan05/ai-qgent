@@ -38,6 +38,9 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
+class VerifyResetTokenRequest(BaseModel):
+    token: str
+
 class USBPairRequest(BaseModel):
     serial: str
 
@@ -179,7 +182,15 @@ async def forgot_password(request: ForgotPasswordRequest):
     """Request password reset"""
     from services.auth_service import get_auth_service
     result = get_auth_service().forgot_password(request.email)
-    return {"success": True, "message": result.message}
+    return {"success": True, "message": result.message, "token": result.token}
+
+
+@router.get("/auth/reset-password/verify")
+async def verify_reset_token(token: str = Query(...)):
+    """Verify a password reset token"""
+    from services.auth_service import get_auth_service
+    result = get_auth_service().verify_reset_token(token)
+    return {"success": result.success, "message": result.message}
 
 
 @router.post("/auth/reset-password")

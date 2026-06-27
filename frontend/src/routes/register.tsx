@@ -2,7 +2,8 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { ApaOrb } from "@/components/apa/ApaOrb";
 import { ParticleField } from "@/components/apa/ParticleField";
-import { loginUser } from "@/lib/apa/enterprise";
+import { authApi } from "@/lib/api/auth";
+import { AxiosError } from "axios";
 
 export const Route = createFileRoute("/register")({
   head: () => ({ meta: [{ title: "Create account — APA-OS" }] }),
@@ -19,6 +20,8 @@ function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -31,19 +34,69 @@ function RegisterPage() {
     e.preventDefault();
     if (!canSubmit) return;
     setLoading(true);
-    await new Promise((r) => setTimeout(r, 1400));
-    loginUser(name, email);
-    setLoading(false);
-    navigate({ to: "/pair-device" });
+    setError(null);
+    try {
+      const res = await authApi.register({
+        full_name: name,
+        email,
+        password: pw,
+      });
+      if (res.success) {
+        setSuccess(true);
+      }
+    } catch (err) {
+      const axiosErr = err as AxiosError<{ detail: string }>;
+      if (axiosErr.response?.data?.detail) {
+        setError(axiosErr.response.data.detail);
+      } else if (axiosErr.response?.status === 409) {
+        setError("An account with this email already exists.");
+      } else if (axiosErr.response?.status === 422) {
+        setError("Invalid input. Please check your information.");
+      } else {
+        setError("Something went wrong. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
   }
 
-  const strengthColors = ["", "bg-destructive", "bg-warn", "bg-accent", "bg-[color:var(--color-success)]"];
-  const strengthLabels = ["", "Weak", "Fair", "Strong", "Very strong"];
+  if (success) {
+    return (
+      <div className="min-h-screen bg-background text-foreground grain flex items-center justify-center px-6 gradient-mesh">
+        <div className={`w-full max-w-[420px] transition-all duration-700 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"}`}>
+          <Link to="/" className="flex flex-col items-center mb-10">
+            <ApaOrb size={50} state="idle" />
+            <h1 className="mt-3 font-display text-[22px] tracking-tight">
+              apa<span className="text-accent">·</span>os
+            </h1>
+          </Link>
+
+          <div className="glass rounded-2xl p-8 text-center card-expand">
+            <div className="mx-auto w-14 h-14 rounded-full bg-[color:var(--color-success)]/10 flex items-center justify-center mb-5">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                <path d="M5 12l5 5L19 7" stroke="oklch(0.72 0.12 150)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="check-draw" style={{ strokeDasharray: 24 }} />
+              </svg>
+            </div>
+            <h2 className="font-display text-[20px] tracking-tight">Account created</h2>
+            <p className="mt-2 text-[13px] text-muted-foreground leading-relaxed">
+              Check your email to verify your account.<br />
+              The verification link expires in 24 hours.
+            </p>
+            <Link
+              to="/login"
+              className="mt-6 inline-block text-[11px] text-accent hover:text-accent/80 transition-colors uppercase tracking-[0.18em]"
+            >
+              Continue to sign in
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background text-foreground overflow-hidden">
       <div className="flex min-h-screen">
-        {/* ─── Left Panel ─── */}
         <div className="hidden lg:flex lg:w-[55%] relative items-center justify-center gradient-mesh">
           <ParticleField count={35} speed={0.15} opacity={0.25} />
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -86,10 +139,8 @@ function RegisterPage() {
           </div>
         </div>
 
-        {/* ─── Right Panel: Register Form ─── */}
         <div className="flex-1 flex items-center justify-center px-6 py-12 lg:px-12">
           <div className={`w-full max-w-[400px] transition-all duration-700 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-6"}`} style={{ transitionDelay: "200ms" }}>
-            {/* Mobile logo */}
             <div className="lg:hidden flex flex-col items-center mb-10">
               <ApaOrb size={60} state="idle" />
               <h1 className="mt-4 font-display text-[28px] tracking-tight">
@@ -107,8 +158,13 @@ function RegisterPage() {
             <h1 className="font-display text-[28px] tracking-tight">Begin.</h1>
             <p className="mt-2 text-[13px] text-muted-foreground">Your AI operating system starts here.</p>
 
+            {error && (
+              <div className="mt-4 p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-[12px] text-destructive">
+                {error}
+              </div>
+            )}
+
             <form onSubmit={handleSubmit} className="mt-8 space-y-5">
-              {/* Name */}
               <div className="relative">
                 <label className="block">
                   <span className={`text-[9px] uppercase tracking-[0.22em] transition-colors duration-200 ${focusedField === "name" ? "text-accent" : "text-muted-foreground"}`}>
@@ -127,7 +183,6 @@ function RegisterPage() {
                 </label>
               </div>
 
-              {/* Email */}
               <div className="relative">
                 <label className="block">
                   <span className={`text-[9px] uppercase tracking-[0.22em] transition-colors duration-200 ${focusedField === "email" ? "text-accent" : "text-muted-foreground"}`}>
@@ -146,7 +201,6 @@ function RegisterPage() {
                 </label>
               </div>
 
-              {/* Password */}
               <div className="relative">
                 <label className="block">
                   <span className={`text-[9px] uppercase tracking-[0.22em] transition-colors duration-200 ${focusedField === "password" ? "text-accent" : "text-muted-foreground"}`}>
@@ -159,7 +213,7 @@ function RegisterPage() {
                       onChange={(e) => setPw(e.target.value)}
                       onFocus={() => setFocusedField("password")}
                       onBlur={() => setFocusedField(null)}
-                      placeholder="Min 6 characters"
+                      placeholder="Min 8 characters"
                       className="w-full bg-transparent border hairline rounded-xl px-4 py-3 pr-12 text-[14px] outline-none focus:border-accent input-glow transition-all duration-200 placeholder:text-muted-foreground/30"
                       autoComplete="new-password"
                     />
@@ -179,7 +233,6 @@ function RegisterPage() {
                     </button>
                   </div>
                 </label>
-                {/* Strength bar */}
                 {pw.length > 0 && (
                   <div className="mt-2 flex items-center gap-2">
                     <div className="flex-1 flex gap-1">
@@ -195,7 +248,6 @@ function RegisterPage() {
                 )}
               </div>
 
-              {/* Confirm Password */}
               <div className="relative">
                 <label className="block">
                   <span className={`text-[9px] uppercase tracking-[0.22em] transition-colors duration-200 ${focusedField === "confirm" ? "text-accent" : "text-muted-foreground"}`}>
@@ -223,7 +275,6 @@ function RegisterPage() {
                 )}
               </div>
 
-              {/* Submit */}
               <button
                 type="submit"
                 disabled={!canSubmit || loading}
@@ -243,7 +294,6 @@ function RegisterPage() {
               </button>
             </form>
 
-            {/* Terms */}
             <p className="mt-5 text-center text-[10px] text-muted-foreground/50 leading-relaxed">
               By creating an account, you agree to our{" "}
               <span className="text-muted-foreground/70 cursor-pointer hover:text-foreground transition-colors">Terms</span>
@@ -251,7 +301,6 @@ function RegisterPage() {
               <span className="text-muted-foreground/70 cursor-pointer hover:text-foreground transition-colors">Privacy Policy</span>.
             </p>
 
-            {/* Login link */}
             <p className="mt-6 text-center text-[12px] text-muted-foreground">
               Already have an account?{" "}
               <Link to="/login" className="text-accent hover:text-accent/80 transition-colors font-medium">
@@ -264,3 +313,6 @@ function RegisterPage() {
     </div>
   );
 }
+
+const strengthColors = ["", "bg-destructive", "bg-warn", "bg-accent", "bg-[color:var(--color-success)]"];
+const strengthLabels = ["", "Weak", "Fair", "Strong", "Very strong"];

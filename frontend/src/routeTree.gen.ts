@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorldRouteImport } from './routes/world'
 import { Route as WorkspacesRouteImport } from './routes/workspaces'
 import { Route as WorkflowsRouteImport } from './routes/workflows'
+import { Route as VerifyEmailRouteImport } from './routes/verify-email'
 import { Route as VerifyDeviceRouteImport } from './routes/verify-device'
 import { Route as VerificationRouteImport } from './routes/verification'
 import { Route as TwinRouteImport } from './routes/twin'
@@ -24,6 +25,7 @@ import { Route as ScreenMemoryRouteImport } from './routes/screen-memory'
 import { Route as ScreenIntelligenceRouteImport } from './routes/screen-intelligence'
 import { Route as ScreenAnalysisRouteImport } from './routes/screen-analysis'
 import { Route as ScreenRouteImport } from './routes/screen'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as ResearchRouteImport } from './routes/research'
 import { Route as ReplayRouteImport } from './routes/replay'
 import { Route as RegisterRouteImport } from './routes/register'
@@ -89,6 +91,11 @@ const WorkflowsRoute = WorkflowsRouteImport.update({
   path: '/workflows',
   getParentRoute: () => rootRouteImport,
 } as any)
+const VerifyEmailRoute = VerifyEmailRouteImport.update({
+  id: '/verify-email',
+  path: '/verify-email',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const VerifyDeviceRoute = VerifyDeviceRouteImport.update({
   id: '/verify-device',
   path: '/verify-device',
@@ -147,6 +154,11 @@ const ScreenAnalysisRoute = ScreenAnalysisRouteImport.update({
 const ScreenRoute = ScreenRouteImport.update({
   id: '/screen',
   path: '/screen',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ResearchRoute = ResearchRouteImport.update({
@@ -439,6 +451,7 @@ export interface FileRoutesByFullPath {
   '/register': typeof RegisterRoute
   '/replay': typeof ReplayRoute
   '/research': typeof ResearchRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/screen': typeof ScreenRoute
   '/screen-analysis': typeof ScreenAnalysisRoute
   '/screen-intelligence': typeof ScreenIntelligenceRoute
@@ -451,6 +464,7 @@ export interface FileRoutesByFullPath {
   '/twin': typeof TwinRoute
   '/verification': typeof VerificationRoute
   '/verify-device': typeof VerifyDeviceRoute
+  '/verify-email': typeof VerifyEmailRoute
   '/workflows': typeof WorkflowsRoute
   '/workspaces': typeof WorkspacesRoute
   '/world': typeof WorldRoute
@@ -505,6 +519,7 @@ export interface FileRoutesByTo {
   '/register': typeof RegisterRoute
   '/replay': typeof ReplayRoute
   '/research': typeof ResearchRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/screen': typeof ScreenRoute
   '/screen-analysis': typeof ScreenAnalysisRoute
   '/screen-intelligence': typeof ScreenIntelligenceRoute
@@ -517,6 +532,7 @@ export interface FileRoutesByTo {
   '/twin': typeof TwinRoute
   '/verification': typeof VerificationRoute
   '/verify-device': typeof VerifyDeviceRoute
+  '/verify-email': typeof VerifyEmailRoute
   '/workflows': typeof WorkflowsRoute
   '/workspaces': typeof WorkspacesRoute
   '/world': typeof WorldRoute
@@ -572,6 +588,7 @@ export interface FileRoutesById {
   '/register': typeof RegisterRoute
   '/replay': typeof ReplayRoute
   '/research': typeof ResearchRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/screen': typeof ScreenRoute
   '/screen-analysis': typeof ScreenAnalysisRoute
   '/screen-intelligence': typeof ScreenIntelligenceRoute
@@ -584,6 +601,7 @@ export interface FileRoutesById {
   '/twin': typeof TwinRoute
   '/verification': typeof VerificationRoute
   '/verify-device': typeof VerifyDeviceRoute
+  '/verify-email': typeof VerifyEmailRoute
   '/workflows': typeof WorkflowsRoute
   '/workspaces': typeof WorkspacesRoute
   '/world': typeof WorldRoute
@@ -640,6 +658,7 @@ export interface FileRouteTypes {
     | '/register'
     | '/replay'
     | '/research'
+    | '/reset-password'
     | '/screen'
     | '/screen-analysis'
     | '/screen-intelligence'
@@ -652,6 +671,7 @@ export interface FileRouteTypes {
     | '/twin'
     | '/verification'
     | '/verify-device'
+    | '/verify-email'
     | '/workflows'
     | '/workspaces'
     | '/world'
@@ -706,6 +726,7 @@ export interface FileRouteTypes {
     | '/register'
     | '/replay'
     | '/research'
+    | '/reset-password'
     | '/screen'
     | '/screen-analysis'
     | '/screen-intelligence'
@@ -718,6 +739,7 @@ export interface FileRouteTypes {
     | '/twin'
     | '/verification'
     | '/verify-device'
+    | '/verify-email'
     | '/workflows'
     | '/workspaces'
     | '/world'
@@ -772,6 +794,7 @@ export interface FileRouteTypes {
     | '/register'
     | '/replay'
     | '/research'
+    | '/reset-password'
     | '/screen'
     | '/screen-analysis'
     | '/screen-intelligence'
@@ -784,6 +807,7 @@ export interface FileRouteTypes {
     | '/twin'
     | '/verification'
     | '/verify-device'
+    | '/verify-email'
     | '/workflows'
     | '/workspaces'
     | '/world'
@@ -839,6 +863,7 @@ export interface RootRouteChildren {
   RegisterRoute: typeof RegisterRoute
   ReplayRoute: typeof ReplayRoute
   ResearchRoute: typeof ResearchRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
   ScreenRoute: typeof ScreenRoute
   ScreenAnalysisRoute: typeof ScreenAnalysisRoute
   ScreenIntelligenceRoute: typeof ScreenIntelligenceRoute
@@ -851,6 +876,7 @@ export interface RootRouteChildren {
   TwinRoute: typeof TwinRoute
   VerificationRoute: typeof VerificationRoute
   VerifyDeviceRoute: typeof VerifyDeviceRoute
+  VerifyEmailRoute: typeof VerifyEmailRoute
   WorkflowsRoute: typeof WorkflowsRoute
   WorkspacesRoute: typeof WorkspacesRoute
   WorldRoute: typeof WorldRoute
@@ -878,6 +904,13 @@ declare module '@tanstack/react-router' {
       path: '/workflows'
       fullPath: '/workflows'
       preLoaderRoute: typeof WorkflowsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/verify-email': {
+      id: '/verify-email'
+      path: '/verify-email'
+      fullPath: '/verify-email'
+      preLoaderRoute: typeof VerifyEmailRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/verify-device': {
@@ -962,6 +995,13 @@ declare module '@tanstack/react-router' {
       path: '/screen'
       fullPath: '/screen'
       preLoaderRoute: typeof ScreenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/research': {
@@ -1383,6 +1423,7 @@ const rootRouteChildren: RootRouteChildren = {
   RegisterRoute: RegisterRoute,
   ReplayRoute: ReplayRoute,
   ResearchRoute: ResearchRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
   ScreenRoute: ScreenRoute,
   ScreenAnalysisRoute: ScreenAnalysisRoute,
   ScreenIntelligenceRoute: ScreenIntelligenceRoute,
@@ -1395,6 +1436,7 @@ const rootRouteChildren: RootRouteChildren = {
   TwinRoute: TwinRoute,
   VerificationRoute: VerificationRoute,
   VerifyDeviceRoute: VerifyDeviceRoute,
+  VerifyEmailRoute: VerifyEmailRoute,
   WorkflowsRoute: WorkflowsRoute,
   WorkspacesRoute: WorkspacesRoute,
   WorldRoute: WorldRoute,

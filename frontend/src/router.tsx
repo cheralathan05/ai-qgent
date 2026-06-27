@@ -1,9 +1,9 @@
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter, redirect } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
-import { entStore } from "./lib/apa/enterprise";
+import { entStore, hasTokens } from "./lib/apa/enterprise";
 
-const PUBLIC_ROUTES = ["/login", "/register", "/forgot-password"];
+const PUBLIC_ROUTES = ["/login", "/register", "/forgot-password", "/reset-password", "/verify-email"];
 
 export const getRouter = () => {
   const queryClient = new QueryClient();
@@ -17,8 +17,17 @@ export const getRouter = () => {
     beforeLoad: ({ location }) => {
       const { authenticated } = entStore.get();
       const isPublic = PUBLIC_ROUTES.includes(location.pathname);
+      const tokensExist = hasTokens();
+
       if (!authenticated && !isPublic) {
+        if (tokensExist) {
+          return;
+        }
         throw redirect({ to: "/login" });
+      }
+
+      if (authenticated && isPublic && location.pathname !== "/reset-password" && location.pathname !== "/verify-email") {
+        throw redirect({ to: "/pair-device" });
       }
     },
   });

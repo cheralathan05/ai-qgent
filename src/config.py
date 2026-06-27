@@ -101,6 +101,17 @@ class SecurityConfig:
 
 
 @dataclass
+class SmtpConfig:
+    """SMTP email configuration"""
+    host: str
+    port: int
+    secure: bool
+    user: str
+    password: str
+    from_addr: str
+
+
+@dataclass
 class TimeoutConfig:
     """Timeout configuration"""
     intent_detection: int = 5
@@ -179,6 +190,24 @@ class Config:
         execution=EXECUTION_TIMEOUT,
     )
     
+    # SMTP
+    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_SECURE = _get_bool_env("SMTP_SECURE", default=False)
+    SMTP_USER = os.getenv("SMTP_USER", "")
+    SMTP_PASS = os.getenv("SMTP_PASS", "")
+    SMTP_FROM = _get_env_value("SMTP_FROM", default="APA-OS <noreply@apa-os.ai>").strip('"').strip("'")
+    smtp_config = SmtpConfig(
+        host=SMTP_HOST,
+        port=SMTP_PORT,
+        secure=SMTP_SECURE,
+        user=SMTP_USER,
+        password=SMTP_PASS,
+        from_addr=SMTP_FROM,
+    )
+
+    FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
     # API
     API_HOST = _get_env_value("API_HOST", "HOST", default="0.0.0.0")
     API_PORT = int(_get_env_value("API_PORT", "PORT", default="8000"))

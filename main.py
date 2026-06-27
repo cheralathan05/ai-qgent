@@ -23,6 +23,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 from fastapi import FastAPI, WebSocket
+from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from devices import device_manager, WindowsDevice, AndroidDevice
@@ -550,6 +551,39 @@ app.include_router(unified_router)
 # Register APA-OS V2 API router (Auth, Devices, Trust, Permissions, Agents, Automation, Notifications)
 from api.v2 import router as v2_router
 app.include_router(v2_router)
+
+# WebSocket for device real-time updates (phase 1)
+@app.websocket("/ws/device")
+async def websocket_device(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            import json as _json
+            try:
+                payload = _json.loads(data)
+            except Exception:
+                payload = {"type": "ping"}
+            await websocket.send_json({
+                "event": "device_update",
+                "type": payload.get("type", "status"),
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+    except Exception:
+        pass
+    finally:
+        logger.info("Device WS client disconnected")
+
+
+# Register Phase 1 Auth API router (matching spec endpoints)
+from api.auth import router as auth_router
+from api.unified_auth import router as unified_auth_router
+app.include_router(auth_router)
+app.include_router(unified_auth_router, prefix="/api")
+
+# Register Phase 1 Device API router
+from api.device import router as device_router
+app.include_router(device_router)
 
 
 # Health check endpoint

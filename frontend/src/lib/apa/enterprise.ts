@@ -1,6 +1,3 @@
-// Enterprise layer: workspaces, notifications, errors, activity, flags, prefs.
-// Pure state helpers, persisted via apaStore extension.
-
 import { apaStore } from "./store";
 
 export type NotificationCategory =
@@ -61,9 +58,21 @@ export interface Personalization {
   copilotOpen: boolean;
 }
 
+export interface UserProfile {
+  id: string;
+  full_name: string;
+  email: string;
+  email_verified: boolean;
+  status: string;
+  last_login: string | null;
+  created_at: string;
+  accessToken: string;
+  refreshToken: string;
+}
+
 export interface EnterpriseState {
   authenticated: boolean;
-  user: { name: string; email: string } | null;
+  user: UserProfile | null;
   workspaces: Workspace[];
   activeWorkspaceId: string;
   notifications: AppNotification[];
@@ -75,6 +84,7 @@ export interface EnterpriseState {
 }
 
 const ENT_KEY = "apa-os:enterprise:v1";
+const TOKEN_KEY = "apa-os:tokens";
 
 const seedEnt = (): EnterpriseState => ({
   authenticated: false,
@@ -139,7 +149,6 @@ export const entStore = {
   reset() { ent = seedEnt(); persist(); listeners.forEach(l => l()); },
 };
 
-// Helpers
 export function pushActivity(e: Omit<ActivityEvent, "id" | "at">) {
   entStore.set(s => ({
     ...s,
@@ -159,12 +168,32 @@ export function pushError(e: Omit<ErrorEvent, "id" | "at">) {
   }));
 }
 
-export function loginUser(name: string, email: string) {
-  entStore.set(s => ({ ...s, authenticated: true, user: { name, email } }));
+export function loginUser(user: UserProfile) {
+  localStorage.setItem('accessToken', user.accessToken);
+  localStorage.setItem('refreshToken', user.refreshToken);
+  localStorage.setItem('user', JSON.stringify(user));
+  entStore.set(s => ({ ...s, authenticated: true, user }));
 }
 
 export function logoutUser() {
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('refreshToken');
+  localStorage.removeItem('user');
   entStore.set(s => ({ ...s, authenticated: false, user: null, onboardingComplete: false }));
+}
+
+export function getStoredUser(): UserProfile | null {
+  try {
+    const raw = localStorage.getItem('user');
+    if (!raw) return null;
+    return JSON.parse(raw) as UserProfile;
+  } catch {
+    return null;
+  }
+}
+
+export function hasTokens(): boolean {
+  return !!(localStorage.getItem('accessToken') && localStorage.getItem('refreshToken'));
 }
 
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -179,5 +208,4 @@ export function useEnt<T>(sel: (s: EnterpriseState) => T): T {
   return c ? snap : sel(seedEnt());
 }
 
-// Keep apaStore wired in case future cross-store sync is needed
 export const __wired = !!apaStore;

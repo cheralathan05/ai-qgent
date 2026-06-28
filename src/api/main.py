@@ -45,6 +45,7 @@ from api.apa_os_api import router as apa_os_router
 from api.phase2 import router as phase2_router
 from api.auth import router as auth_router
 from api.pairing import router as pairing_router
+from api.pairing_usb import router as usb_pairing_router
 
 # Layer imports
 from screen_memory import get_screen_memory
@@ -1888,6 +1889,9 @@ app.include_router(auth_router)
 # Include Pairing API routes
 app.include_router(pairing_router)
 
+# Include USB Pairing API routes
+app.include_router(usb_pairing_router)
+
 # Include Phase 2 Vision-Based Agentic Automation routes (mounted under /api/phase2)
 app.include_router(phase2_router, prefix="/api/phase2")
 
@@ -1896,7 +1900,7 @@ app.include_router(phase2_router, prefix="/api/phase2")
 
 @app.websocket("/ws/device")
 async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
-    """Real-time device updates and command stream"""
+    """Real-time device updates, heartbeats, and command stream"""
     from services.auth_service import get_auth_service
     auth_service = get_auth_service()
     user_info = auth_service.validate_token(token)
@@ -1911,13 +1915,69 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
 
     try:
         while True:
-            # Wait for messages from the client (e.g. heartbeat or a specific request)
             data = await websocket.receive_text()
             message = json.loads(data)
+            msg_type = message.get("type", "ping")
 
-            # Handle incoming messages if needed
-            if message.get("type") == "ping":
+            if msg_type == "ping":
                 await websocket.send_json({"type": "pong", "timestamp": datetime.utcnow().isoformat()})
+
+            elif msg_type == "heartbeat":
+                from services.heartbeat_service import get_heartbeat_service, HeartbeatData
+                device_id = message.get("device_id", "")
+                if device_id:
+                    hb = HeartbeatData(
+                        device_id=device_id,
+                        battery_level=message.get("battery_level", 0),
+                        battery_charging=message.get("battery_charging", False),
+                        foreground_app=message.get("foreground_app", ""),
+                        foreground_package=message.get("foreground_package", ""),
+                        current_activity=message.get("current_activity", ""),
+                        screen_state=message.get("screen_state", ""),
+                        lock_state=message.get("lock_state", ""),
+                        network_type=message.get("network_type", ""),
+                        network_strength=message.get("network_strength", 0),
+                        memory_usage_mb=message.get("memory_usage_mb", 0),
+                        cpu_usage_percent=message.get("cpu_usage_percent", 0.0),
+                        storage_free_gb=message.get("storage_free_gb", 0.0),
+                        storage_total_gb=message.get("storage_total_gb", 0.0),
+                        uptime_seconds=message.get("uptime_seconds", 0),
+                        agent_version=message.get("agent_version", ""),
+                        accessibility_active=message.get("accessibility_active", False),
+                    )
+                    was_disconnected = get_heartbeat_service().record_heartbeat(device_id, hb)
+                    await ws_manager.send_personal_message({
+                        "event": "HEARTBEAT",
+                        "device_id": device_id,
+                        "battery_level": hb.battery_level,
+                        "battery_charging": hb.battery_charging,
+                        "foreground_app": hb.foreground_app,
+                        "foreground_package": hb.foreground_package,
+                        "current_activity": hb.current_activity,
+                        "screen_state": hb.screen_state,
+                        "lock_state": hb.lock_state,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }, user_id)
+                    if was_disconnected:
+                        await ws_manager.send_personal_message({
+                            "event": "DEVICE_RECONNECTED",
+                            "device_id": device_id,
+                            "timestamp": datetime.utcnow().isoformat(),
+                        }, user_id)
+
+            elif msg_type == "subscribe":
+                device_id = message.get("device_id", "")
+                if device_id:
+                    if device_id not in ws_manager.active_connections:
+                        ws_manager.active_connections[device_id] = set()
+                    ws_manager.active_connections[device_id].add(websocket)
+                    await websocket.send_json({"event": "subscribed", "device_id": device_id})
+
+            elif msg_type == "unsubscribe":
+                device_id = message.get("device_id", "")
+                if device_id and device_id in ws_manager.active_connections:
+                    ws_manager.active_connections[device_id].discard(websocket)
+                    await websocket.send_json({"event": "unsubscribed", "device_id": device_id})
 
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket, user_id)

@@ -387,6 +387,8 @@ class DeviceHeartbeat(Base):
     battery_level = Column(Integer, nullable=True)
     battery_charging = Column(Boolean, default=False)
     foreground_app = Column(String(255), nullable=True)
+    foreground_package = Column(String(255), nullable=True)
+    current_activity = Column(String(255), nullable=True)
     screen_state = Column(String(50), nullable=True)  # on, off, dozing
     lock_state = Column(String(50), nullable=True)  # locked, unlocked
     network_type = Column(String(50), nullable=True)  # wifi, mobile, none
@@ -394,10 +396,131 @@ class DeviceHeartbeat(Base):
     memory_usage_mb = Column(Integer, nullable=True)
     cpu_usage_percent = Column(Float, nullable=True)
     storage_free_gb = Column(Float, nullable=True)
+    storage_total_gb = Column(Float, nullable=True)
     uptime_seconds = Column(Integer, nullable=True)
+    agent_version = Column(String(50), nullable=True)
+    accessibility_active = Column(Boolean, default=False)
     metadata_json = Column(JSON, default=dict)
     recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     __table_args__ = (
         Index("idx_heartbeat_device_time", "device_id", "recorded_at"),
     )
+
+
+class DeviceTwin(Base):
+    """Digital twin of a paired Android device"""
+    __tablename__ = "device_twins"
+
+    id = Column(String(255), primary_key=True, default=lambda: f"twn_{uuid.uuid4().hex[:12]}")
+    device_id = Column(String(255), ForeignKey("registered_devices.id"), nullable=False, unique=True, index=True)
+    user_id = Column(String(255), ForeignKey("users.id"), nullable=False, index=True)
+
+    # Hardware profile
+    manufacturer = Column(String(255), nullable=True)
+    model = Column(String(255), nullable=True)
+    brand = Column(String(255), nullable=True)
+    cpu_abi = Column(String(50), nullable=True)
+    ram_total_gb = Column(Float, nullable=True)
+    storage_total_gb = Column(Float, nullable=True)
+    screen_width = Column(Integer, nullable=True)
+    screen_height = Column(Integer, nullable=True)
+    screen_density = Column(Integer, nullable=True)
+
+    # Software profile
+    android_version = Column(String(50), nullable=True)
+    sdk_version = Column(Integer, nullable=True)
+    build_number = Column(String(100), nullable=True)
+    security_patch = Column(String(50), nullable=True)
+    installed_apps_count = Column(Integer, nullable=True)
+
+    # AI capabilities snapshot
+    capabilities = Column(JSON, default=list)
+    permissions = Column(JSON, default=dict)
+
+    # Health & Trust
+    health_score = Column(Float, default=1.0)
+    trust_score = Column(Float, default=0.0)
+    readiness_score = Column(Float, default=0.0)
+    ai_ready = Column(Boolean, default=False)
+
+    # Sync state
+    sync_state = Column(String(50), default="pending")  # pending, syncing, synced, error
+    last_sync_at = Column(DateTime, nullable=True)
+    last_seen = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_twin_user", "user_id"),
+    )
+
+
+class PairingWorkflow(Base):
+    """Complete pairing workflow state machine"""
+    __tablename__ = "pairing_workflows"
+
+    id = Column(String(255), primary_key=True, default=lambda: f"pwf_{uuid.uuid4().hex[:12]}")
+    user_id = Column(String(255), ForeignKey("users.id"), nullable=False, index=True)
+    device_id = Column(String(255), ForeignKey("registered_devices.id"), nullable=True)
+    session_id = Column(String(255), nullable=True)
+
+    # Current workflow state
+    workflow_state = Column(String(50), default="idle")  # idle, discovering, connecting, verifying, trusting, permissions, registering, twin_creating, ready, error
+    pairing_type = Column(String(50), default="usb")  # usb, wireless, qr
+
+    # Device info at time of pairing
+    serial = Column(String(255), nullable=True)
+    manufacturer = Column(String(255), nullable=True)
+    model = Column(String(255), nullable=True)
+    android_version = Column(String(50), nullable=True)
+
+    # ADB authorization state
+    adb_authorized = Column(Boolean, default=False)
+    usb_authorized = Column(Boolean, default=False)
+
+    # Fingerprint from verification
+    device_fingerprint = Column(String(255), nullable=True)
+
+    # Error tracking
+    error_message = Column(Text, nullable=True)
+    error_code = Column(String(50), nullable=True)
+    retry_count = Column(Integer, default=0)
+
+    # Timestamps per step
+    discovered_at = Column(DateTime, nullable=True)
+    connected_at = Column(DateTime, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    trusted_at = Column(DateTime, nullable=True)
+    permissions_at = Column(DateTime, nullable=True)
+    registered_at = Column(DateTime, nullable=True)
+    twin_created_at = Column(DateTime, nullable=True)
+    ready_at = Column(DateTime, nullable=True)
+
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_pairing_workflow_user_state", "user_id", "workflow_state"),
+    )
+
+
+class USBSession(Base):
+    """USB connection session tracking"""
+    __tablename__ = "usb_sessions"
+
+    id = Column(String(255), primary_key=True, default=lambda: f"usb_{uuid.uuid4().hex[:12]}")
+    user_id = Column(String(255), ForeignKey("users.id"), nullable=False, index=True)
+    serial = Column(String(255), nullable=False, index=True)
+    status = Column(String(50), default="connected")  # connected, pairing, paired, disconnected
+    adb_authorized = Column(Boolean, default=False)
+    manufacturer = Column(String(255), nullable=True)
+    model = Column(String(255), nullable=True)
+    connected_at = Column(DateTime, default=datetime.utcnow)
+    disconnected_at = Column(DateTime, nullable=True)
+    last_heartbeat = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -73,7 +73,7 @@ async def verify_email(token: str = Query(...)):
 
 
 @router.post("/login")
-async def login(request: LoginRequest, _: None = Depends(rate_limit(10, 300))):
+async def login(request: LoginRequest, _: None = Depends(rate_limit(10, 20))):
     """Authenticate user and return tokens"""
     service = get_auth_service()
     result = service.login(
@@ -134,10 +134,12 @@ async def logout(session_id: str = Body(..., embed=True)):
 
 
 @router.post("/forgot-password")
-async def forgot_password(request: ForgotPasswordRequest, _: None = Depends(rate_limit(3, 600))):
+async def forgot_password(request: ForgotPasswordRequest, _: None = Depends(rate_limit(3, 30))):
     """Send password reset email"""
     service = get_auth_service()
     result = service.forgot_password(request.email)
+    if not result.success:
+        raise HTTPException(status_code=404, detail=result.message)
     return {"success": True, "message": result.message}
 
 

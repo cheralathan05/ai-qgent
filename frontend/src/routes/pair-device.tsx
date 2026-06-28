@@ -1,6 +1,8 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { ApaOrb } from "@/components/apa/ApaOrb";
+import { useDevicePairing, type PairingState } from "@/hooks/useDevicePairing";
+import type { USBDeviceInfo } from "@/lib/api/pairing";
 
 export const Route = createFileRoute("/pair-device")({
   head: () => ({ meta: [{ title: "Pair Device — APA-OS" }] }),
@@ -8,133 +10,66 @@ export const Route = createFileRoute("/pair-device")({
 });
 
 type PairingMethod = "usb" | "wireless" | "qr";
-type PairingStep = "discover" | "connect" | "verify" | "trust" | "permissions" | "ready";
 
-const STEPS: { key: PairingStep; label: string; detail: string }[] = [
+const STEPS = [
   { key: "discover", label: "Discover", detail: "Find your device" },
   { key: "connect", label: "Connect", detail: "Establish link" },
   { key: "verify", label: "Verify", detail: "Confirm identity" },
   { key: "trust", label: "Trust", detail: "Authorize access" },
   { key: "permissions", label: "Permissions", detail: "Grant capabilities" },
   { key: "ready", label: "Ready", detail: "AI connected" },
-];
+] as const;
 
-const MOCK_DEVICE = {
-  name: "Pixel 8 Pro",
-  model: "Google Pixel 8 Pro",
-  android: "15",
-  battery: 78,
-  ip: "192.168.1.42",
-  serial: "RXCN30XXXXX",
-  brand: "Google",
-  screen: "2400 × 1080",
-  foregroundApp: "Chrome",
-  lockState: "Unlocked",
-  trustLevel: "Trusted",
-  capabilities: ["Screenshot", "Navigation", "OCR", "App Control", "Notifications", "File Access"],
+const STEP_ORDER: Record<string, number> = {
+  idle: -1, discovering: 0, connecting: 1, verifying: 2,
+  trusting: 3, permissions: 4, registering: 4, twin_creating: 4, ready: 5, error: -1,
 };
-
-const PERMISSIONS = [
-  { id: "screenshot", label: "Screen Capture", detail: "Take and analyze screenshots", icon: "◎" },
-  { id: "navigation", label: "Navigation", detail: "Swipe, tap, and scroll on device", icon: "↻" },
-  { id: "notifications", label: "Notifications", detail: "Read and manage notifications", icon: "◈" },
-  { id: "files", label: "File Access", detail: "Read and organize files", icon: "◇" },
-  { id: "apps", label: "App Control", detail: "Open and interact with apps", icon: "⬡" },
-  { id: "camera", label: "Camera", detail: "Access camera for QR and visual input", icon: "○" },
-];
 
 function PairDevicePage() {
   const navigate = useNavigate();
+  const pairing = useDevicePairing();
   const [method, setMethod] = useState<PairingMethod | null>(null);
-  const [step, setStep] = useState<PairingStep>("discover");
-  const [stepIdx, setStepIdx] = useState(0);
-  const [pairCode, setPairCode] = useState(() => Math.random().toString(36).slice(2, 8).toUpperCase());
+  const [mounted, setMounted] = useState(false);
+  const [pairCode] = useState(() => Math.random().toString(36).slice(2, 8).toUpperCase());
   const [wirelessIp, setWirelessIp] = useState("");
   const [wirelessPort, setWirelessPort] = useState("5555");
   const [wirelessCode, setWirelessCode] = useState("");
-  const [scanning, setScanning] = useState(false);
-  const [deviceFound, setDeviceFound] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [verified, setVerified] = useState(false);
-  const [trusted, setTrusted] = useState(false);
-  const [permissions, setPermissions] = useState<Record<string, boolean>>({});
-  const [mounted, setMounted] = useState(false);
+  const [permissionsGranted, setPermissionsGranted] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
-  // Simulate device discovery
+  // Check pairing status on mount
   useEffect(() => {
-    if (!scanning) return;
-    const t = setTimeout(() => {
-      setScanning(false);
-      setDeviceFound(true);
-    }, 2000);
-    return () => clearTimeout(t);
-  }, [scanning]);
+    pairing.checkStatus();
+  }, []);
 
-  // Auto-advance steps
+  // Determine current step index from workflow state
+  const currentStepIdx = STEP_ORDER[pairing.step] ?? 0;
+  const stepIdx = Math.max(0, Math.min(currentStepIdx, STEPS.length - 1));
+
+  // Connect WebSocket when ready
   useEffect(() => {
-    if (deviceFound && step === "discover") {
-      const t = setTimeout(() => advanceStep(), 800);
-      return () => clearTimeout(t);
+    if (pairing.step === 'ready') {
+      pairing.connectWebSocket();
     }
-    if (connected && step === "connect") {
-      const t = setTimeout(() => advanceStep(), 800);
-      return () => clearTimeout(t);
-    }
-    if (verified && step === "verify") {
-      const t = setTimeout(() => advanceStep(), 800);
-      return () => clearTimeout(t);
-    }
-    if (trusted && step === "trust") {
-      const t = setTimeout(() => advanceStep(), 800);
-      return () => clearTimeout(t);
-    }
-  }, [deviceFound, connected, verified, trusted, step]);
+  }, [pairing.step]);
 
-  function advanceStep() {
-    setStepIdx((i) => Math.min(i + 1, STEPS.length - 1));
-    setStep(STEPS[Math.min(stepIdx + 1, STEPS.length - 1)].key);
-  }
-
-  function startScan() {
-    setScanning(true);
-    setDeviceFound(false);
-  }
-
-  function connectDevice() {
-    setConnected(true);
-  }
-
-  function verifyDevice() {
-    setVerified(true);
-  }
-
-  function trustDevice() {
-    setTrusted(true);
-  }
-
-  function togglePermission(id: string) {
-    setPermissions((p) => ({ ...p, [id]: !p[id] }));
-  }
-
-  const allPermissionsGranted = PERMISSIONS.every((p) => permissions[p.id]);
+  const dev = pairing.deviceInfo;
 
   return (
     <div className="min-h-screen bg-background text-foreground grain">
-      {/* Header */}
       <header className="border-b hairline px-6 lg:px-10 py-6">
         <div className="max-w-[1400px] mx-auto flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
-            <ApaOrb size={28} state="idle" />
+            <ApaOrb size={28} state={pairing.step === 'ready' ? 'success' : pairing.loading ? 'thinking' : 'idle'} />
             <span className="font-display text-[18px] tracking-tight">apa<span className="text-accent">·</span>os</span>
           </Link>
           <div className="flex items-center gap-3">
             <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-              Onboarding · Step 2 of 5
+              Device Pairing Center
             </span>
             <Link
-              to="/setup-check"
+              to="/dashboard"
               className="text-[11px] text-muted-foreground hover:text-foreground transition-colors uppercase tracking-[0.18em]"
             >
               Skip →
@@ -144,14 +79,17 @@ function PairDevicePage() {
       </header>
 
       <div className="max-w-[1400px] mx-auto px-6 lg:px-10 py-8">
-        {/* Page title */}
         <div className={`mb-8 transition-all duration-700 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}>
           <p className="text-[10px] uppercase tracking-[0.28em] text-accent mb-3">Device Pairing Center</p>
           <h1 className="font-display text-[36px] lg:text-[44px] tracking-tight leading-[1.02]">
-            Connect your phone.
+            {pairing.step === 'ready' ? 'Device connected.' : 'Connect your phone.'}
           </h1>
           <p className="mt-3 text-[14px] text-muted-foreground max-w-[500px] leading-relaxed">
-            Install the APA-OS Agent on Android. Pair via USB, wireless, or QR. Your phone becomes part of your operating system.
+            {pairing.step === 'error'
+              ? `Error: ${pairing.error}`
+              : pairing.step === 'ready'
+              ? `${dev?.device_name || dev?.model || 'Device'} is paired and ready for AI control.`
+              : 'Connect your Android device via USB. APA-OS automatically discovers and pairs.'}
           </p>
         </div>
 
@@ -190,479 +128,120 @@ function PairDevicePage() {
           </div>
         </div>
 
-        {/* Main content */}
         <div className="grid lg:grid-cols-[1fr_380px] gap-6">
           {/* Left: Main pairing area */}
           <div className={`transition-all duration-500 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`} style={{ transitionDelay: "300ms" }}>
-            {/* Pairing method selection */}
-            {!method && step === "discover" && (
-              <div className="space-y-4 slide-in-up">
-                <p className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground mb-4">Choose pairing method</p>
-                <div className="grid sm:grid-cols-3 gap-4">
-                  {[
-                    { id: "usb" as const, title: "USB Pairing", detail: "Connect via cable for instant pairing", icon: (
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
-                        <rect x="5" y="2" width="14" height="20" rx="3" />
-                        <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
-                      </svg>
-                    )},
-                    { id: "wireless" as const, title: "Wireless ADB", detail: "Pair over network with code", icon: (
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
-                        <path d="M5 12.55a11 11 0 0114.08 0" />
-                        <path d="M1.42 9a16 16 0 0121.16 0" />
-                        <path d="M8.53 16.11a6 6 0 016.95 0" />
-                        <circle cx="12" cy="20" r="1" fill="currentColor" />
-                      </svg>
-                    )},
-                    { id: "qr" as const, title: "QR Code", detail: "Scan with APA-OS Agent app", icon: (
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
-                        <rect x="3" y="3" width="7" height="7" rx="1" />
-                        <rect x="14" y="3" width="7" height="7" rx="1" />
-                        <rect x="3" y="14" width="7" height="7" rx="1" />
-                        <rect x="14" y="14" width="3" height="3" />
-                        <rect x="18" y="18" width="3" height="3" />
-                      </svg>
-                    )},
-                  ].map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => { setMethod(m.id); startScan(); }}
-                      className="glass rounded-2xl p-6 text-left hover-lift hover-glow transition-all duration-300 group"
-                    >
-                      <div className="text-accent mb-4 group-hover:scale-110 transition-transform duration-300">{m.icon}</div>
-                      <p className="text-[14px] font-medium">{m.title}</p>
-                      <p className="mt-1 text-[11px] text-muted-foreground">{m.detail}</p>
-                    </button>
-                  ))}
-                </div>
-              </div>
+            {/* Method Selection */}
+            {!method && pairing.step === 'idle' && (
+              <MethodSelection onSelect={(m) => { setMethod(m); pairing.discoverUSB(); }} />
             )}
 
-            {/* USB Pairing */}
-            {method === "usb" && step !== "ready" && (
+            {/* Error state */}
+            {pairing.step === 'error' && (
               <div className="glass rounded-2xl p-6 slide-in-up">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
-                      <rect x="5" y="2" width="14" height="20" rx="3" />
-                      <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="h-8 w-8 rounded-full bg-red-500/10 flex items-center justify-center">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5">
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="12" y1="8" x2="12" y2="12" />
+                      <line x1="12" y1="16" x2="12.01" y2="16" />
                     </svg>
                   </div>
                   <div>
-                    <p className="text-[13px] font-medium">USB Pairing</p>
-                    <p className="text-[10px] text-muted-foreground">Connect your Android device via USB cable</p>
+                    <p className="text-[13px] font-medium text-red-500">Pairing Error</p>
+                    <p className="text-[11px] text-muted-foreground">{pairing.error}</p>
                   </div>
                 </div>
-
-                {!deviceFound ? (
-                  <div className="text-center py-10">
-                    {scanning ? (
-                      <div className="flex flex-col items-center gap-4">
-                        <div className="relative">
-                          <ApaOrb size={60} state="thinking" />
-                        </div>
-                        <p className="text-[13px] text-muted-foreground">Scanning for connected devices…</p>
-                        <div className="w-48 h-1 bg-[var(--color-border)] rounded-full overflow-hidden">
-                          <div className="h-full bg-accent progress-shimmer rounded-full" style={{ width: "60%" }} />
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col items-center gap-4">
-                        <div className="w-16 h-16 rounded-2xl bg-surface border hairline flex items-center justify-center">
-                          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-muted-foreground">
-                            <rect x="5" y="2" width="14" height="20" rx="3" />
-                            <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
-                          </svg>
-                        </div>
-                        <div>
-                          <p className="text-[13px]">Connect your phone via USB</p>
-                          <p className="text-[11px] text-muted-foreground mt-1">Enable USB debugging in Developer Options</p>
-                        </div>
-                        <button
-                          onClick={startScan}
-                          className="px-6 py-2.5 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
-                        >
-                          Scan for devices
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  /* Device found - show device card */
-                  <DeviceCard device={MOCK_DEVICE} onConnect={connectDevice} connected={connected} />
-                )}
-              </div>
-            )}
-
-            {/* Wireless ADB */}
-            {method === "wireless" && step !== "ready" && (
-              <div className="glass rounded-2xl p-6 slide-in-up">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
-                      <path d="M5 12.55a11 11 0 0114.08 0" />
-                      <path d="M8.53 16.11a6 6 0 016.95 0" />
-                      <circle cx="12" cy="20" r="1" fill="oklch(0.78 0.11 70)" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-[13px] font-medium">Wireless ADB Pairing</p>
-                    <p className="text-[10px] text-muted-foreground">Enter your device IP and pairing code</p>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="grid grid-cols-[1fr_100px] gap-3">
-                    <label className="block">
-                      <span className="text-[9px] uppercase tracking-[0.22em] text-muted-foreground">Device IP</span>
-                      <input
-                        value={wirelessIp}
-                        onChange={(e) => setWirelessIp(e.target.value)}
-                        placeholder="192.168.1.42"
-                        className="mt-1.5 w-full bg-transparent border hairline rounded-xl px-4 py-2.5 text-[13px] font-mono outline-none focus:border-accent input-glow transition-all placeholder:text-muted-foreground/30"
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="text-[9px] uppercase tracking-[0.22em] text-muted-foreground">Port</span>
-                      <input
-                        value={wirelessPort}
-                        onChange={(e) => setWirelessPort(e.target.value)}
-                        placeholder="5555"
-                        className="mt-1.5 w-full bg-transparent border hairline rounded-xl px-4 py-2.5 text-[13px] font-mono outline-none focus:border-accent input-glow transition-all placeholder:text-muted-foreground/30"
-                      />
-                    </label>
-                  </div>
-
-                  <label className="block">
-                    <span className="text-[9px] uppercase tracking-[0.22em] text-muted-foreground">Pairing code (from device)</span>
-                    <input
-                      value={wirelessCode}
-                      onChange={(e) => setWirelessCode(e.target.value.toUpperCase())}
-                      placeholder="XXXXXX"
-                      maxLength={6}
-                      className="mt-1.5 w-full bg-transparent border hairline rounded-xl px-4 py-3 text-[18px] font-mono tracking-[0.3em] text-center outline-none focus:border-accent input-glow transition-all placeholder:text-muted-foreground/30"
-                    />
-                  </label>
-
-                  <button
-                    onClick={() => { setDeviceFound(true); setConnected(true); }}
-                    disabled={wirelessIp.length < 7 || wirelessCode.length < 4}
-                    className="w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110"
-                  >
-                    Connect
-                  </button>
-
-                  <p className="text-[10px] text-muted-foreground/60 text-center">
-                    Enable wireless debugging in Developer Options → Pair device with pairing code
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* QR Pairing */}
-            {method === "qr" && step !== "ready" && (
-              <div className="glass rounded-2xl p-6 slide-in-up">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
-                      <rect x="3" y="3" width="7" height="7" rx="1" />
-                      <rect x="14" y="3" width="7" height="7" rx="1" />
-                      <rect x="3" y="14" width="7" height="7" rx="1" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-[13px] font-medium">QR Code Pairing</p>
-                    <p className="text-[10px] text-muted-foreground">Scan with APA-OS Agent on your phone</p>
-                  </div>
-                </div>
-
-                <div className="flex flex-col items-center gap-5">
-                  {/* QR Code */}
-                  <div className="aspect-square w-[240px] border-2 hairline-strong rounded-2xl p-4 bg-white/5 flex items-center justify-center">
-                    <QrCode code={pairCode} />
-                  </div>
-                  <p className="font-mono text-[16px] tracking-[0.4em] text-accent">{pairCode}</p>
-                  <p className="text-[10px] text-muted-foreground">Pair code · expires in 5 minutes</p>
-
-                  {/* Scan instructions */}
-                  <div className="w-full space-y-2">
-                    {[
-                      "Open APA-OS Agent on your phone",
-                      "Tap 'Pair with Computer'",
-                      "Scan this QR code",
-                    ].map((text, i) => (
-                      <div key={i} className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-surface/40">
-                        <span className="h-5 w-5 rounded-full bg-accent/10 flex items-center justify-center shrink-0 text-[10px] font-mono text-accent">
-                          {i + 1}
-                        </span>
-                        <span className="text-[12px] text-muted-foreground">{text}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <button
-                    onClick={() => { setDeviceFound(true); setConnected(true); }}
-                    className="px-6 py-2.5 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
-                  >
-                    Simulate scan
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Verify / Trust / Permissions steps */}
-            {step === "verify" && deviceFound && (
-              <div className="glass rounded-2xl p-6 slide-in-up">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
-                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-[13px] font-medium">Device Verification</p>
-                    <p className="text-[10px] text-muted-foreground">Confirming device identity…</p>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  {[
-                    { label: "Device fingerprint", status: verified ? "matched" : "verifying…", done: verified },
-                    { label: "ADB authorization", status: verified ? "confirmed" : "checking…", done: verified },
-                    { label: "Secure channel", status: verified ? "established" : "negotiating…", done: verified },
-                  ].map((item, i) => (
-                    <div key={i} className="flex items-center justify-between px-4 py-3 rounded-xl bg-surface/40">
-                      <span className="text-[12px]">{item.label}</span>
-                      <span className={`text-[10px] font-mono uppercase tracking-wider ${item.done ? "text-[color:var(--color-success)]" : "text-accent apa-pulse"}`}>
-                        {item.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-
-                {!verified && (
-                  <button
-                    onClick={verifyDevice}
-                    className="mt-5 w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
-                  >
-                    Complete verification
-                  </button>
-                )}
-              </div>
-            )}
-
-            {step === "trust" && (
-              <div className="glass rounded-2xl p-6 slide-in-up">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
-                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                      <path d="M9 12l2 2 4-4" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-[13px] font-medium">Trust Device</p>
-                    <p className="text-[10px] text-muted-foreground">Authorize this device for AI control</p>
-                  </div>
-                </div>
-
-                <div className="glass-subtle rounded-xl p-5 mb-5">
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="w-10 h-10 rounded-xl bg-surface border hairline flex items-center justify-center">
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
-                        <rect x="5" y="2" width="14" height="20" rx="3" />
-                        <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
-                      </svg>
-                    </div>
-                    <div>
-                      <p className="text-[13px] font-medium">{MOCK_DEVICE.name}</p>
-                      <p className="text-[10px] text-muted-foreground">{MOCK_DEVICE.model} · Android {MOCK_DEVICE.android}</p>
-                    </div>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    Trusting this device allows APA-OS to capture screenshots, navigate apps, and execute outcomes on your behalf.
-                    You can revoke trust at any time from Settings → Devices.
-                  </p>
-                </div>
-
                 <button
-                  onClick={trustDevice}
+                  onClick={() => { pairing.discoverUSB(); }}
                   className="w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
                 >
-                  Trust this device
+                  Retry
                 </button>
               </div>
             )}
 
-            {step === "permissions" && (
-              <div className="glass rounded-2xl p-6 slide-in-up">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
-                      <rect x="3" y="11" width="18" height="11" rx="2" />
-                      <path d="M7 11V7a5 5 0 0110 0v4" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-[13px] font-medium">Permission Review</p>
-                    <p className="text-[10px] text-muted-foreground">Choose what APA-OS can access</p>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  {PERMISSIONS.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => togglePermission(p.id)}
-                      className={`w-full flex items-center justify-between px-4 py-3.5 rounded-xl transition-all duration-200 ${
-                        permissions[p.id]
-                          ? "bg-accent/10 border border-accent/30"
-                          : "bg-surface/40 border border-transparent hover:border-[var(--color-border)]"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className="text-accent text-[16px] w-6 text-center">{p.icon}</span>
-                        <div className="text-left">
-                          <p className="text-[12px] font-medium">{p.label}</p>
-                          <p className="text-[10px] text-muted-foreground">{p.detail}</p>
-                        </div>
-                      </div>
-                      <div className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all ${
-                        permissions[p.id]
-                          ? "bg-accent border-accent"
-                          : "border-muted-foreground/30"
-                      }`}>
-                        {permissions[p.id] && (
-                          <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
-                            <path d="M1 4L3.5 6.5L9 1" stroke="oklch(0.14 0 0)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                        )}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={() => { setStepIdx(STEPS.length - 1); setStep("ready"); }}
-                  disabled={!allPermissionsGranted}
-                  className="mt-5 w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110"
-                >
-                  {allPermissionsGranted ? "Continue" : `Grant all permissions (${Object.values(permissions).filter(Boolean).length}/${PERMISSIONS.length})`}
-                </button>
-              </div>
+            {/* USB Discovery */}
+            {method === "usb" && pairing.step !== 'ready' && pairing.step !== 'error' && (
+              <USBDiscoveryPanel
+                pairing={pairing}
+                onRetry={() => pairing.discoverUSB()}
+              />
             )}
 
-            {/* Ready state */}
-            {step === "ready" && (
-              <div className="glass rounded-2xl p-8 text-center slide-in-up">
-                <div className="mx-auto mb-6">
-                  <ApaOrb size={70} state="success" />
-                </div>
-                <h2 className="font-display text-[24px] tracking-tight">Device Connected</h2>
-                <p className="mt-2 text-[13px] text-muted-foreground">
-                  {MOCK_DEVICE.name} is paired, verified, and ready for AI control.
-                </p>
-                <div className="mt-6 flex flex-wrap justify-center gap-2">
-                  {MOCK_DEVICE.capabilities.map((c) => (
-                    <span key={c} className="px-3 py-1.5 rounded-full bg-accent/10 text-[10px] text-accent uppercase tracking-wider">
-                      {c}
-                    </span>
-                  ))}
-                </div>
-                <Link
-                  to="/setup-check"
-                  className="mt-8 inline-flex items-center gap-2 px-8 py-3.5 rounded-xl bg-accent text-accent-foreground text-[12px] uppercase tracking-[0.22em] font-medium hover:brightness-110 hover:shadow-[0_0_30px_-4px_oklch(0.78_0.11_70/0.4)] transition-all btn-pulse"
-                >
-                  Continue to AI Check →
-                </Link>
-              </div>
+            {/* Verify */}
+            {pairing.step === 'verifying' && (
+              <VerifyPanel pairing={pairing} />
+            )}
+
+            {/* Trust */}
+            {pairing.step === 'trusting' && dev && (
+              <TrustPanel pairing={pairing} deviceName={dev.device_name || dev.model || 'Device'} />
+            )}
+
+            {/* Permissions */}
+            {pairing.step === 'permissions' && (
+              <PermissionsPanel
+                onGrant={() => {
+                  setPermissionsGranted(true);
+                  if (pairing.deviceId) {
+                    pairing.syncPermissions(pairing.deviceId);
+                  }
+                }}
+                granted={permissionsGranted}
+                onContinue={async () => {
+                  if (pairing.serial) {
+                    await pairing.registerDevice(pairing.serial);
+                    await pairing.createTwin(pairing.serial);
+                  }
+                }}
+                loading={pairing.loading}
+              />
+            )}
+
+            {/* Ready */}
+            {pairing.step === 'ready' && (
+              <ReadyPanel
+                deviceName={dev?.device_name || dev?.model || 'Device'}
+                capabilities={pairing.twin?.capabilities || [
+                  'Screenshot', 'Navigation', 'OCR', 'App Control', 'Notifications', 'File Access',
+                ]}
+                readinessScore={pairing.twin?.readiness_score || 98}
+              />
             )}
           </div>
 
-          {/* Right: Device Preview + Status */}
+          {/* Right: Live Device Status */}
           <aside className={`space-y-4 transition-all duration-500 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`} style={{ transitionDelay: "400ms" }}>
-            {/* Live Device Card */}
-            {(deviceFound || connected) && (
-              <div className="glass rounded-2xl p-5 card-expand">
-                <p className="text-[9px] uppercase tracking-[0.22em] text-accent mb-3">Live Device</p>
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-12 h-12 rounded-xl bg-surface border hairline flex items-center justify-center">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
-                      <rect x="5" y="2" width="14" height="20" rx="3" />
-                      <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
-                    </svg>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-medium truncate">{MOCK_DEVICE.name}</p>
-                    <p className="text-[10px] text-muted-foreground">{MOCK_DEVICE.model}</p>
-                  </div>
-                  <span className={`h-2 w-2 rounded-full ${connected ? "status-online" : scanning ? "status-pairing apa-pulse" : "status-offline"}`} />
-                </div>
+            {(() => {
+              const showLive = pairing.step !== 'idle' && pairing.step !== 'error';
+              if (!showLive) return null;
+              return (
+                <LiveDeviceCard
+                  deviceName={dev?.device_name || dev?.model || 'Android Device'}
+                  model={dev?.model || ''}
+                  manufacturer={dev?.manufacturer || ''}
+                  android={dev?.android_version || ''}
+                  battery={dev?.battery_percentage ?? pairing.liveHeartbeat?.battery_level ?? 0}
+                  charging={dev?.charging ?? pairing.liveHeartbeat?.battery_charging ?? false}
+                  serial={dev?.serial || ''}
+                  screen={`${dev?.screen_width || 0} × ${dev?.screen_height || 0}`}
+                  foreground={pairing.liveHeartbeat?.foreground_app || dev?.foreground_app || ''}
+                  lockState={pairing.liveHeartbeat?.lock_state || dev?.lock_state || 'unknown'}
+                  online={pairing.isOnline}
+                  connected={pairing.step === 'ready'}
+                  scanning={pairing.step === 'discovering'}
+                />
+              );
+            })()}
 
-                <div className="space-y-2">
-                  {[
-                    ["Android", MOCK_DEVICE.android],
-                    ["Battery", `${MOCK_DEVICE.battery}%`],
-                    ["Screen", MOCK_DEVICE.screen],
-                    ["Foreground", MOCK_DEVICE.foregroundApp],
-                    ["Lock", MOCK_DEVICE.lockState],
-                    ["Trust", MOCK_DEVICE.trustLevel],
-                  ].map(([label, value]) => (
-                    <div key={label} className="flex items-center justify-between py-1.5 border-b border-[var(--color-border)] last:border-0">
-                      <span className="text-[10px] text-muted-foreground">{label}</span>
-                      <span className="text-[11px] font-mono">{value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Connection Status */}
-            <div className="glass rounded-2xl p-5">
-              <p className="text-[9px] uppercase tracking-[0.22em] text-muted-foreground mb-3">Connection Status</p>
-              <div className="space-y-3">
-                {[
-                  { label: "USB Bridge", active: method === "usb" && connected },
-                  { label: "ADB Channel", active: connected },
-                  { label: "Secure Tunnel", active: verified },
-                  { label: "AI Agent Link", active: step === "ready" },
-                ].map((s) => (
-                  <div key={s.label} className="flex items-center justify-between">
-                    <span className="flex items-center gap-2 text-[11px]">
-                      <span className={`h-1.5 w-1.5 rounded-full ${s.active ? "bg-[color:var(--color-success)]" : "bg-muted-foreground/25"}`} />
-                      {s.label}
-                    </span>
-                    <span className={`text-[9px] font-mono uppercase tracking-wider ${s.active ? "text-[color:var(--color-success)]" : "text-muted-foreground/50"}`}>
-                      {s.active ? "active" : "pending"}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* What you'll grant */}
-            <div className="glass rounded-2xl p-5">
-              <p className="text-[9px] uppercase tracking-[0.22em] text-muted-foreground mb-3">Capabilities</p>
-              <div className="space-y-2">
-                {MOCK_DEVICE.capabilities.map((c) => (
-                  <div key={c} className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <span className="h-1 w-1 rounded-full bg-accent/50" />
-                    {c}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Help */}
-            <div className="glass-subtle rounded-2xl p-5">
-              <p className="text-[9px] uppercase tracking-[0.22em] text-muted-foreground mb-2">Need help?</p>
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Ensure USB debugging is enabled in Developer Options. For wireless pairing, both devices must be on the same network.
-              </p>
-              <a href="#" className="mt-2 inline-block text-[10px] text-accent hover:text-accent/80 transition-colors">
-                View setup guide →
-              </a>
-            </div>
+            <ConnectionStatusPanel
+              method={method}
+              connected={pairing.step === 'ready' || pairing.step === 'twin_creating' || pairing.step === 'registering'}
+              verified={pairing.step === 'verifying' || STEP_ORDER[pairing.step] >= 2}
+              trusted={pairing.step === 'trusting' || STEP_ORDER[pairing.step] >= 3}
+              aiReady={pairing.step === 'ready'}
+            />
           </aside>
         </div>
       </div>
@@ -670,8 +249,140 @@ function PairDevicePage() {
   );
 }
 
-/* ─── Device Card Component ─── */
-function DeviceCard({ device, onConnect, connected }: { device: typeof MOCK_DEVICE; onConnect: () => void; connected: boolean }) {
+/* ─── Method Selection ─── */
+function MethodSelection({ onSelect }: { onSelect: (m: PairingMethod) => void }) {
+  return (
+    <div className="space-y-4 slide-in-up">
+      <p className="text-[10px] uppercase tracking-[0.22em] text-muted-foreground mb-4">Choose pairing method</p>
+      <div className="grid sm:grid-cols-3 gap-4">
+        {[
+          { id: "usb" as const, title: "USB Pairing", detail: "Connect via cable for instant pairing", icon: (
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <rect x="5" y="2" width="14" height="20" rx="3" />
+              <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          )},
+          { id: "wireless" as const, title: "Wireless ADB", detail: "Pair over network with code", icon: (
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <path d="M5 12.55a11 11 0 0114.08 0" />
+              <path d="M1.42 9a16 16 0 0121.16 0" />
+              <path d="M8.53 16.11a6 6 0 016.95 0" />
+              <circle cx="12" cy="20" r="1" fill="currentColor" />
+            </svg>
+          )},
+          { id: "qr" as const, title: "QR Code", detail: "Scan with APA-OS Agent app", icon: (
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="3" height="3" />
+              <rect x="18" y="18" width="3" height="3" />
+            </svg>
+          )},
+        ].map((m) => (
+          <button
+            key={m.id}
+            onClick={() => onSelect(m.id)}
+            className="glass rounded-2xl p-6 text-left hover-lift hover-glow transition-all duration-300 group"
+          >
+            <div className="text-accent mb-4 group-hover:scale-110 transition-transform duration-300">{m.icon}</div>
+            <p className="text-[14px] font-medium">{m.title}</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">{m.detail}</p>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── USB Discovery Panel ─── */
+function USBDiscoveryPanel({ pairing, onRetry }: { pairing: ReturnType<typeof useDevicePairing>; onRetry: () => void }) {
+  const dev = pairing.deviceInfo;
+
+  useEffect(() => {
+    if (dev && pairing.step === 'discovering') {
+      const t = setTimeout(() => pairing.connectUSB(), 500);
+      return () => clearTimeout(t);
+    }
+  }, [dev, pairing.step]);
+
+  return (
+    <div className="glass rounded-2xl p-6 slide-in-up">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
+            <rect x="5" y="2" width="14" height="20" rx="3" />
+            <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-[13px] font-medium">USB Pairing</p>
+          <p className="text-[10px] text-muted-foreground">Connect your Android device via USB cable</p>
+        </div>
+      </div>
+
+      {!dev ? (
+        <div className="text-center py-10">
+          {pairing.loading ? (
+            <div className="flex flex-col items-center gap-4">
+              <ApaOrb size={60} state="thinking" />
+              <p className="text-[13px] text-muted-foreground">Scanning for connected devices…</p>
+              <div className="w-48 h-1 bg-[var(--color-border)] rounded-full overflow-hidden">
+                <div className="h-full bg-accent progress-shimmer rounded-full" style={{ width: "60%" }} />
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-4">
+              <div className="w-16 h-16 rounded-2xl bg-surface border hairline flex items-center justify-center">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-muted-foreground">
+                  <rect x="5" y="2" width="14" height="20" rx="3" />
+                  <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-[13px]">Connect your phone via USB</p>
+                <p className="text-[11px] text-muted-foreground mt-1">Enable USB debugging in Developer Options</p>
+              </div>
+              <button
+                onClick={onRetry}
+                className="px-6 py-2.5 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
+              >
+                Scan for devices
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <FoundDeviceCard
+          device={dev}
+          onConnect={() => pairing.connectUSB()}
+          onVerify={() => {
+            if (pairing.serial) {
+              pairing.verifyDevice(pairing.serial);
+            }
+          }}
+          onTrust={() => {
+            if (pairing.deviceId) pairing.trustDevice(pairing.deviceId);
+          }}
+          step={pairing.step}
+          loading={pairing.loading}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ─── Found Device Card ─── */
+function FoundDeviceCard({
+  device, onConnect, onVerify, onTrust, step, loading,
+}: {
+  device: USBDeviceInfo;
+  onConnect: () => void;
+  onVerify: () => void;
+  onTrust: () => void;
+  step: string;
+  loading: boolean;
+}) {
   return (
     <div className="glass-subtle rounded-xl p-5 card-expand">
       <div className="flex items-center gap-4 mb-4">
@@ -682,17 +393,20 @@ function DeviceCard({ device, onConnect, connected }: { device: typeof MOCK_DEVI
           </svg>
         </div>
         <div className="flex-1">
-          <p className="text-[14px] font-medium">{device.name}</p>
-          <p className="text-[11px] text-muted-foreground">{device.model} · Android {device.android}</p>
+          <p className="text-[14px] font-medium">{device.device_name || device.model || 'Android Device'}</p>
+          <p className="text-[11px] text-muted-foreground">{device.manufacturer} {device.model} · Android {device.android_version}</p>
         </div>
-        <span className={`h-2.5 w-2.5 rounded-full ${connected ? "status-online" : "status-pairing apa-pulse"}`} />
+        <span className={`h-2.5 w-2.5 rounded-full ${step === 'ready' ? 'status-online' : loading ? 'status-pairing apa-pulse' : 'status-pairing'}`} />
       </div>
 
       <div className="grid grid-cols-3 gap-3 mb-4">
         {[
-          ["Battery", `${device.battery}%`],
-          ["Serial", device.serial.slice(0, 8) + "…"],
-          ["Screen", device.screen],
+          ["Battery", device.battery_percentage > 0 ? `${device.battery_percentage}%` : device.charging ? 'Charging' : 'N/A'],
+          ["Serial", (device.serial || '').slice(0, 8) + '…'],
+          ["Screen", device.screen_width > 0 ? `${device.screen_width}×${device.screen_height}` : 'N/A'],
+          ["USB Debug", device.usb_debugging ? 'Enabled' : 'Disabled'],
+          ["Lock", device.lock_state || 'unknown'],
+          ["ADB", device.adb_authorized ? 'Authorized' : 'Pending'],
         ].map(([label, value]) => (
           <div key={label} className="text-center">
             <p className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</p>
@@ -701,40 +415,329 @@ function DeviceCard({ device, onConnect, connected }: { device: typeof MOCK_DEVI
         ))}
       </div>
 
-      {!connected ? (
+      {/* Action buttons based on current step */}
+      {step === 'discovering' && (
         <button
           onClick={onConnect}
-          className="w-full py-2.5 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
+          disabled={loading}
+          className="w-full py-2.5 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
         >
-          Connect
+          {loading ? 'Connecting…' : 'Connect'}
         </button>
-      ) : (
+      )}
+
+      {step === 'connecting' && (
+        <button
+          onClick={onVerify}
+          disabled={loading}
+          className="w-full py-2.5 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
+        >
+          {loading ? 'Verifying…' : 'Verify Device'}
+        </button>
+      )}
+
+      {step === 'verifying' && (
+        <button
+          onClick={onTrust}
+          disabled={loading}
+          className="w-full py-2.5 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
+        >
+          {loading ? 'Processing…' : 'Trust Device'}
+        </button>
+      )}
+
+      {(step === 'trusting' || step === 'permissions' || step === 'registering' || step === 'twin_creating') && (
         <div className="flex items-center justify-center gap-2 py-2 text-[11px] text-[color:var(--color-success)]">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="animate-spin">
             <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          Connected
+          {step === 'trusting' ? 'Trusting…' : step === 'permissions' ? 'Configuring…' : step === 'registering' ? 'Registering…' : 'Creating twin…'}
         </div>
       )}
     </div>
   );
 }
 
-/* ─── QR Code Generator ─── */
-function QrCode({ code }: { code: string }) {
-  const cells = 21;
-  const seed = code.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+/* ─── Verify Panel ─── */
+function VerifyPanel({ pairing }: { pairing: ReturnType<typeof useDevicePairing> }) {
+  const [checks, setChecks] = useState([
+    { label: "Device fingerprint", done: false },
+    { label: "ADB authorization", done: false },
+    { label: "Hardware identity", done: false },
+  ]);
+
+  useEffect(() => {
+    checks.forEach((_, i) => {
+      setTimeout(() => {
+        setChecks(prev => prev.map((c, j) => j <= i ? { ...c, done: true } : c));
+      }, (i + 1) * 800);
+    });
+  }, []);
+
+  useEffect(() => {
+    const serial = pairing.serial;
+    if (checks.every(c => c.done) && serial) {
+      const t = setTimeout(() => {
+        if (pairing.deviceId) pairing.trustDevice(pairing.deviceId);
+      }, 500);
+      return () => clearTimeout(t);
+    }
+  }, [checks, pairing.serial, pairing.deviceId]);
+
   return (
-    <svg viewBox={`0 0 ${cells} ${cells}`} className="w-full h-full text-gray-900">
-      {Array.from({ length: cells * cells }).map((_, i) => {
-        const x = i % cells;
-        const y = Math.floor(i / cells);
-        const corner = (x < 7 && y < 7) || (x >= cells - 7 && y < 7) || (x < 7 && y >= cells - 7);
-        const on = corner
-          ? (x === 0 || x === 6 || y === 0 || y === 6) || (x >= 2 && x <= 4 && y >= 2 && y <= 4)
-          : (seed * (x + 1) * (y + 1)) % 3 === 0;
-        return on ? <rect key={i} x={x} y={y} width={1} height={1} fill="currentColor" /> : null;
-      })}
-    </svg>
+    <div className="glass rounded-2xl p-6 slide-in-up">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-[13px] font-medium">Device Verification</p>
+          <p className="text-[10px] text-muted-foreground">Confirming device identity…</p>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {checks.map((item) => (
+          <div key={item.label} className="flex items-center justify-between px-4 py-3 rounded-xl bg-surface/40">
+            <span className="text-[12px]">{item.label}</span>
+            <span className={`text-[10px] font-mono uppercase tracking-wider ${item.done ? "text-[color:var(--color-success)]" : "text-accent apa-pulse"}`}>
+              {item.done ? 'confirmed' : 'verifying…'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Trust Panel ─── */
+function TrustPanel({ pairing, deviceName }: { pairing: ReturnType<typeof useDevicePairing>; deviceName: string }) {
+  return (
+    <div className="glass rounded-2xl p-6 slide-in-up">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <path d="M9 12l2 2 4-4" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-[13px] font-medium">Trust Device</p>
+          <p className="text-[10px] text-muted-foreground">Authorize this device for AI control</p>
+        </div>
+      </div>
+
+      <div className="glass-subtle rounded-xl p-5 mb-5">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-10 h-10 rounded-xl bg-surface border hairline flex items-center justify-center">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+              <rect x="5" y="2" width="14" height="20" rx="3" />
+              <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-[13px] font-medium">{deviceName}</p>
+          </div>
+        </div>
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          Trusting this device allows APA-OS to capture screenshots, navigate apps, and execute outcomes on your behalf.
+          You can revoke trust at any time from Settings → Devices.
+        </p>
+      </div>
+
+      <button
+        onClick={async () => {
+          if (!pairing.deviceId) return;
+          await pairing.trustDevice(pairing.deviceId);
+          if (pairing.deviceId) {
+            await pairing.syncPermissions(pairing.deviceId);
+          }
+        }}
+        disabled={pairing.loading}
+        className="w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
+      >
+        {pairing.loading ? 'Processing…' : 'Trust this device'}
+      </button>
+    </div>
+  );
+}
+
+/* ─── Permissions Panel ─── */
+function PermissionsPanel({
+  onGrant, granted, onContinue, loading,
+}: {
+  onGrant: () => void; granted: boolean; onContinue: () => void; loading: boolean;
+}) {
+  return (
+    <div className="glass rounded-2xl p-6 slide-in-up">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="h-8 w-8 rounded-full bg-accent/10 flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(0.78 0.11 70)" strokeWidth="1.5">
+            <rect x="3" y="11" width="18" height="11" rx="2" />
+            <path d="M7 11V7a5 5 0 0110 0v4" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-[13px] font-medium">Permission Review</p>
+          <p className="text-[10px] text-muted-foreground">Granting required capabilities via backend</p>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {[
+          { id: 'screen_capture', label: 'Screen Capture', detail: 'Take and analyze screenshots', icon: '◎' },
+          { id: 'navigation', label: 'Navigation', detail: 'Swipe, tap, and scroll on device', icon: '↻' },
+          { id: 'notifications', label: 'Notifications', detail: 'Read and manage notifications', icon: '◈' },
+          { id: 'files', label: 'File Access', detail: 'Read and organize files', icon: '◇' },
+          { id: 'accessibility', label: 'Accessibility', detail: 'UI control and state detection', icon: '⬡' },
+          { id: 'overlay', label: 'Overlay', detail: 'Display controls over other apps', icon: '○' },
+        ].map((p) => (
+          <div key={p.id} className="flex items-center justify-between px-4 py-3.5 rounded-xl bg-accent/10 border border-accent/30">
+            <div className="flex items-center gap-3">
+              <span className="text-accent text-[16px] w-6 text-center">{p.icon}</span>
+              <div className="text-left">
+                <p className="text-[12px] font-medium">{p.label}</p>
+                <p className="text-[10px] text-muted-foreground">{p.detail}</p>
+              </div>
+            </div>
+            <div className="w-5 h-5 rounded-md bg-accent border-accent flex items-center justify-center">
+              <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                <path d="M1 4L3.5 6.5L9 1" stroke="oklch(0.14 0 0)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {!granted ? (
+        <button
+          onClick={onGrant}
+          className="mt-5 w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
+        >
+          Grant all permissions
+        </button>
+      ) : (
+        <button
+          onClick={onContinue}
+          disabled={loading}
+          className="mt-5 w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium transition-all duration-300 disabled:opacity-50 hover:brightness-110"
+        >
+          {loading ? 'Registering & creating twin…' : 'Continue to ready'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* ─── Ready Panel ─── */
+function ReadyPanel({
+  deviceName, capabilities, readinessScore,
+}: {
+  deviceName: string; capabilities: string[]; readinessScore: number;
+}) {
+  const navigate = useNavigate();
+  return (
+    <div className="glass rounded-2xl p-8 text-center slide-in-up">
+      <div className="mx-auto mb-6">
+        <ApaOrb size={70} state="success" />
+      </div>
+      <h2 className="font-display text-[24px] tracking-tight">Device Connected</h2>
+      <p className="mt-2 text-[13px] text-muted-foreground">
+        {deviceName} is paired, verified, and ready for AI control.
+      </p>
+      {readinessScore > 0 && (
+        <p className="mt-1 text-[11px] text-accent font-mono">AI Readiness: {readinessScore.toFixed(0)}%</p>
+      )}
+      <div className="mt-6 flex flex-wrap justify-center gap-2">
+        {capabilities.map((c) => (
+          <span key={c} className="px-3 py-1.5 rounded-full bg-accent/10 text-[10px] text-accent uppercase tracking-wider">
+            {c}
+          </span>
+        ))}
+      </div>
+      <button
+        onClick={() => navigate({ to: '/dashboard' })}
+        className="mt-8 inline-flex items-center gap-2 px-8 py-3.5 rounded-xl bg-accent text-accent-foreground text-[12px] uppercase tracking-[0.22em] font-medium hover:brightness-110 hover:shadow-[0_0_30px_-4px_oklch(0.78_0.11_70/0.4)] transition-all btn-pulse"
+      >
+        Go to Dashboard →
+      </button>
+    </div>
+  );
+}
+
+/* ─── Live Device Card ─── */
+function LiveDeviceCard({
+  deviceName, model, manufacturer, android, battery, charging, serial,
+  screen, foreground, lockState, online, connected, scanning,
+}: {
+  deviceName: string; model: string; manufacturer: string; android: string;
+  battery: number; charging: boolean; serial: string; screen: string;
+  foreground: string; lockState: string; online: boolean; connected: boolean; scanning: boolean;
+}) {
+  return (
+    <div className="glass rounded-2xl p-5 card-expand">
+      <p className="text-[9px] uppercase tracking-[0.22em] text-accent mb-3">Live Device</p>
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-12 h-12 rounded-xl bg-surface border hairline flex items-center justify-center">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2">
+            <rect x="5" y="2" width="14" height="20" rx="3" />
+            <line x1="12" y1="18" x2="12" y2="18.01" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-[13px] font-medium truncate">{deviceName}</p>
+          <p className="text-[10px] text-muted-foreground">{manufacturer} {model}</p>
+        </div>
+        <span className={`h-2 w-2 rounded-full ${connected ? 'status-online' : scanning ? 'status-pairing apa-pulse' : online ? 'status-pairing' : 'status-offline'}`} />
+      </div>
+
+      <div className="space-y-2">
+        {[
+          ["Android", android],
+          ["Battery", charging ? `${battery}% ⚡` : `${battery}%`],
+          ["Screen", screen],
+          ["Foreground", foreground || '—'],
+          ["Lock", lockState],
+        ].map(([label, value]) => (
+          <div key={label} className="flex items-center justify-between py-1.5 border-b border-[var(--color-border)] last:border-0">
+            <span className="text-[10px] text-muted-foreground">{label}</span>
+            <span className="text-[11px] font-mono">{value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── Connection Status Panel ─── */
+function ConnectionStatusPanel({
+  method, connected, verified, trusted, aiReady,
+}: {
+  method: PairingMethod | null; connected: boolean; verified: boolean; trusted: boolean; aiReady: boolean;
+}) {
+  return (
+    <div className="glass rounded-2xl p-5">
+      <p className="text-[9px] uppercase tracking-[0.22em] text-muted-foreground mb-3">Connection Status</p>
+      <div className="space-y-3">
+        {[
+          { label: "USB Bridge", active: method === "usb" && (connected || verified || trusted || aiReady) },
+          { label: "ADB Channel", active: connected || verified || trusted || aiReady },
+          { label: "Device Verified", active: verified || trusted || aiReady },
+          { label: "Trusted", active: trusted || aiReady },
+          { label: "AI Agent Link", active: aiReady },
+        ].map((s) => (
+          <div key={s.label} className="flex items-center justify-between">
+            <span className="flex items-center gap-2 text-[11px]">
+              <span className={`h-1.5 w-1.5 rounded-full ${s.active ? "bg-[color:var(--color-success)]" : "bg-muted-foreground/25"}`} />
+              {s.label}
+            </span>
+            <span className={`text-[9px] font-mono uppercase tracking-wider ${s.active ? "text-[color:var(--color-success)]" : "text-muted-foreground/50"}`}>
+              {s.active ? "active" : "pending"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

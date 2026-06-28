@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 class EmailService:
     """Send emails via SMTP"""
 
+    _ssl_ctx: Optional[ssl.SSLContext] = None
+
     def __init__(self):
         self._config = None
 
@@ -24,6 +26,12 @@ class EmailService:
             from config import Config
             self._config = Config.smtp_config
         return self._config
+
+    @classmethod
+    def _get_ssl_context(cls) -> ssl.SSLContext:
+        if cls._ssl_ctx is None:
+            cls._ssl_ctx = ssl.create_default_context()
+        return cls._ssl_ctx
 
     def send_email(
         self,
@@ -48,8 +56,8 @@ class EmailService:
         msg.attach(MIMEText(html_body, "html"))
 
         try:
-            ctx = ssl.create_default_context()
-            with smtplib.SMTP(cfg.host, cfg.port, timeout=15) as server:
+            ctx = self._get_ssl_context()
+            with smtplib.SMTP(cfg.host, cfg.port, timeout=30) as server:
                 server.ehlo()
                 if not cfg.secure:
                     server.starttls(context=ctx)

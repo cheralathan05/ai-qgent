@@ -88,8 +88,9 @@ class AuthService:
         """Create new user account"""
         session = self._get_session()
         try:
+            email = email.strip().lower()
             # Check if email already exists
-            existing_user = session.query(User).filter(User.email == email.lower()).first()
+            existing_user = session.query(User).filter(User.email == email).first()
             if existing_user:
                 return AuthResult(success=False, message="Email already registered")
 
@@ -106,7 +107,7 @@ class AuthService:
             user = User(
                 id=secrets.token_urlsafe(16),
                 full_name=name,
-                email=email.lower(),
+                email=email,
                 password_hash=hash_password(password),
                 email_verified=True,
                 verification_token=None,
@@ -133,8 +134,11 @@ class AuthService:
         """Resend verification email"""
         session = self._get_session()
         try:
-            email = email.lower()
-            user = session.query(User).filter(User.email == email).first()
+            email_clean = email.strip().lower()
+            user = session.query(User).filter(User.email == email_clean).first()
+            if not user:
+                user = session.query(User).filter(User.email == email.lower()).first()
+            email = email_clean
             if not user:
                 return AuthResult(success=True, message="If an account exists, a verification email has been sent.")
             if user.email_verified:
@@ -158,8 +162,10 @@ class AuthService:
         """Authenticate user and return tokens"""
         session = self._get_session()
         try:
-            # Find user
-            user = session.query(User).filter(User.email == email.lower()).first()
+            # Find user (try stripped first, then original for legacy accounts)
+            user = session.query(User).filter(User.email == email.strip().lower()).first()
+            if not user:
+                user = session.query(User).filter(User.email == email.lower()).first()
             if not user:
                 return AuthResult(success=False, message="Invalid email or password")
 
@@ -321,16 +327,17 @@ class AuthService:
         """Generate password reset token and send email"""
         session = self._get_session()
         try:
-            email = email.lower()
+            email_clean = email.strip().lower()
 
-            # Find user
-            user = session.query(User).filter(User.email == email).first()
+            # Find user (try stripped first, then original for legacy accounts)
+            user = session.query(User).filter(User.email == email_clean).first()
+            if not user:
+                user = session.query(User).filter(User.email == email.lower()).first()
 
             if not user:
-                # Never reveal if email exists
                 return AuthResult(
-                    success=True,
-                    message="If an account exists with this email, a reset link has been sent",
+                    success=False,
+                    message="No account found with this email. Please sign up first.",
                 )
 
             # Generate reset token
@@ -349,17 +356,17 @@ class AuthService:
             )
             session.add(reset)
 
-            # Send reset email
-            reset_link = f"{Config.FRONTEND_URL}/reset-password?token={raw_token}"
-            from services.email_service import EmailService
-            email_sent = EmailService().send_password_reset(email, reset_link)
-
-            if not email_sent:
-                logger.warning(f"Failed to send reset email to {email}")
-
             session.commit()
 
-            logger.info(f"Password reset requested for: {email}")
+            # Send reset email (commit first to ensure token is saved)
+            reset_link = f"{Config.FRONTEND_URL}/reset-password?token={raw_token}"
+            from services.email_service import EmailService
+            email_sent = EmailService().send_password_reset(email_clean, reset_link)
+
+            if not email_sent:
+                logger.warning(f"Failed to send reset email to {email_clean}")
+
+            logger.info(f"Password reset requested for: {email_clean}")
             return AuthResult(
                 success=True,
                 message="If an account exists with this email, a reset link has been sent",

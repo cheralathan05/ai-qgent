@@ -114,6 +114,29 @@ export interface DeviceLink {
   capabilities?: string[];
 }
 
+export interface DeviceInfo {
+  id: string;
+  name: string;
+  device_name?: string;
+  model: string;
+  manufacturer: string;
+  android_version: string;
+  battery: number;
+  is_online: boolean;
+  connection_type: string;
+  serial?: string;
+  screen_width?: number;
+  screen_height?: number;
+  last_seen: string | null;
+  twin?: {
+    readiness_score?: number;
+    ai_ready?: boolean;
+    health_score?: number;
+    trust_score?: number;
+    sync_state?: string;
+  };
+}
+
 export interface ReplayStep {
   id: string;
   outcomeId: string;

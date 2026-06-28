@@ -162,7 +162,7 @@ function PairDevicePage() {
             )}
 
             {/* USB Discovery */}
-            {method === "usb" && pairing.step !== 'ready' && pairing.step !== 'error' && (
+            {method === "usb" && (pairing.step === 'idle' || pairing.step === 'discovering' || pairing.step === 'connecting') && (
               <USBDiscoveryPanel
                 pairing={pairing}
                 onRetry={() => pairing.discoverUSB()}

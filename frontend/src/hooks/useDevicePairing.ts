@@ -103,6 +103,7 @@ export function useDevicePairing() {
         ...s,
         step: 'connecting',
         workflowId: result.workflow_id,
+        deviceId: result.workflow_id,
         serial: result.serial,
         deviceInfo: result.device_info,
         loading: false,

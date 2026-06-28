@@ -3,6 +3,8 @@ import { useState, useEffect, useCallback } from "react";
 import { ApaOrb } from "@/components/apa/ApaOrb";
 import { useDevicePairing, type PairingState } from "@/hooks/useDevicePairing";
 import type { USBDeviceInfo } from "@/lib/api/pairing";
+import { DISPLAY_STEPS, STEP_ORDER, ERROR_STATES } from "@/lib/api/pairing";
+import type { NonErrorPairingStep } from "@/lib/api/pairing";
 
 export const Route = createFileRoute("/pair-device")({
   head: () => ({ meta: [{ title: "Pair Device — APA-OS" }] }),
@@ -11,29 +13,15 @@ export const Route = createFileRoute("/pair-device")({
 
 type PairingMethod = "usb" | "wireless" | "qr";
 
-const STEPS = [
-  { key: "discover", label: "Discover", detail: "Find your device" },
-  { key: "connect", label: "Connect", detail: "Establish link" },
-  { key: "verify", label: "Verify", detail: "Confirm identity" },
-  { key: "trust", label: "Trust", detail: "Authorize access" },
-  { key: "permissions", label: "Permissions", detail: "Grant capabilities" },
-  { key: "ready", label: "Ready", detail: "AI connected" },
-] as const;
-
-const STEP_ORDER: Record<string, number> = {
-  idle: -1, discovering: 0, connecting: 1, verifying: 2,
-  trusting: 3, permissions: 4, registering: 4, twin_creating: 4, ready: 5, error: -1,
-};
+function isErrorStep(step: string): boolean {
+  return step === 'error' || ERROR_STATES.has(step as NonErrorPairingStep);
+}
 
 function PairDevicePage() {
   const navigate = useNavigate();
   const pairing = useDevicePairing();
   const [method, setMethod] = useState<PairingMethod | null>(null);
   const [mounted, setMounted] = useState(false);
-  const [pairCode] = useState(() => Math.random().toString(36).slice(2, 8).toUpperCase());
-  const [wirelessIp, setWirelessIp] = useState("");
-  const [wirelessPort, setWirelessPort] = useState("5555");
-  const [wirelessCode, setWirelessCode] = useState("");
   const [permissionsGranted, setPermissionsGranted] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
@@ -43,25 +31,29 @@ function PairDevicePage() {
     pairing.checkStatus();
   }, []);
 
+  // Navigate based on backend state
+  useEffect(() => {
+    const step = pairing.step;
+    if (step === 'READY' || step === 'ACTIVE') {
+      // Navigate to dashboard after brief delay for user to see success
+      const t = setTimeout(() => navigate({ to: '/dashboard' }), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [pairing.step, navigate]);
+
   // Determine current step index from workflow state
   const currentStepIdx = STEP_ORDER[pairing.step] ?? 0;
-  const stepIdx = Math.max(0, Math.min(currentStepIdx, STEPS.length - 1));
-
-  // Connect WebSocket when ready
-  useEffect(() => {
-    if (pairing.step === 'ready') {
-      pairing.connectWebSocket();
-    }
-  }, [pairing.step]);
+  const stepIdx = Math.max(0, Math.min(currentStepIdx, DISPLAY_STEPS.length - 1));
 
   const dev = pairing.deviceInfo;
+  const isError = isErrorStep(pairing.step) || !!pairing.error;
 
   return (
     <div className="min-h-screen bg-background text-foreground grain">
       <header className="border-b hairline px-6 lg:px-10 py-6">
         <div className="max-w-[1400px] mx-auto flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
-            <ApaOrb size={28} state={pairing.step === 'ready' ? 'success' : pairing.loading ? 'thinking' : 'idle'} />
+            <ApaOrb size={28} state={pairing.step === 'READY' || pairing.step === 'ACTIVE' ? 'success' : pairing.loading ? 'thinking' : 'idle'} />
             <span className="font-display text-[18px] tracking-tight">apa<span className="text-accent">·</span>os</span>
           </Link>
           <div className="flex items-center gap-3">
@@ -82,21 +74,21 @@ function PairDevicePage() {
         <div className={`mb-8 transition-all duration-700 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}>
           <p className="text-[10px] uppercase tracking-[0.28em] text-accent mb-3">Device Pairing Center</p>
           <h1 className="font-display text-[36px] lg:text-[44px] tracking-tight leading-[1.02]">
-            {pairing.step === 'ready' ? 'Device connected.' : 'Connect your phone.'}
+            {pairing.step === 'READY' || pairing.step === 'ACTIVE' ? 'Device connected.' : 'Connect your phone.'}
           </h1>
           <p className="mt-3 text-[14px] text-muted-foreground max-w-[500px] leading-relaxed">
-            {pairing.step === 'error'
+            {isError
               ? `Error: ${pairing.error}`
-              : pairing.step === 'ready'
+              : pairing.step === 'READY' || pairing.step === 'ACTIVE'
               ? `${dev?.device_name || dev?.model || 'Device'} is paired and ready for AI control.`
-              : 'Connect your Android device via USB. APA-OS automatically discovers and pairs.'}
+              : pairing.message || 'Connect your Android device via USB. APA-OS automatically discovers and pairs.'}
           </p>
         </div>
 
         {/* Step Progress */}
         <div className={`mb-8 transition-all duration-500 ${mounted ? "opacity-100" : "opacity-0"}`} style={{ transitionDelay: "200ms" }}>
           <div className="flex items-center gap-0">
-            {STEPS.map((s, i) => (
+            {DISPLAY_STEPS.map((s, i) => (
               <div key={s.key} className="flex items-center">
                 <div className="flex flex-col items-center">
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-mono transition-all duration-300 ${
@@ -118,7 +110,7 @@ function PairDevicePage() {
                     i <= stepIdx ? "text-foreground" : "text-muted-foreground/50"
                   }`}>{s.label}</span>
                 </div>
-                {i < STEPS.length - 1 && (
+                {i < DISPLAY_STEPS.length - 1 && (
                   <div className={`w-12 lg:w-20 h-px mx-1 mb-5 transition-colors duration-300 ${
                     i < stepIdx ? "bg-[color:var(--color-success)]" : "bg-[var(--color-border)]"
                   }`} />
@@ -132,55 +124,56 @@ function PairDevicePage() {
           {/* Left: Main pairing area */}
           <div className={`transition-all duration-500 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`} style={{ transitionDelay: "300ms" }}>
             {/* Method Selection */}
-            {!method && pairing.step === 'idle' && (
+            {!method && pairing.step === 'IDLE' && (
               <MethodSelection onSelect={(m) => { setMethod(m); pairing.discoverUSB(); }} />
             )}
 
             {/* Error state */}
-            {pairing.step === 'error' && (
-              <div className="glass rounded-2xl p-6 slide-in-up">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="h-8 w-8 rounded-full bg-red-500/10 flex items-center justify-center">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5">
-                      <circle cx="12" cy="12" r="10" />
-                      <line x1="12" y1="8" x2="12" y2="12" />
-                      <line x1="12" y1="16" x2="12.01" y2="16" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-[13px] font-medium text-red-500">Pairing Error</p>
-                    <p className="text-[11px] text-muted-foreground">{pairing.error}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => { pairing.discoverUSB(); }}
-                  className="w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
-                >
-                  Retry
-                </button>
-              </div>
+            {isError && (
+              <ErrorPanel
+                error={pairing.error || 'Unknown error'}
+                onRetry={() => {
+                  setPermissionsGranted(false);
+                  if (method === 'usb') {
+                    pairing.discoverUSB();
+                  } else {
+                    setMethod(null);
+                  }
+                }}
+                onCancel={() => {
+                  setMethod(null);
+                  setPermissionsGranted(false);
+                  pairing.disconnect();
+                }}
+              />
             )}
 
             {/* USB Discovery */}
-            {method === "usb" && (pairing.step === 'idle' || pairing.step === 'discovering' || pairing.step === 'connecting') && (
+            {(pairing.step === 'DISCOVERING' || pairing.step === 'DEVICE_FOUND' || pairing.step === 'CONNECTING' || pairing.step === 'CONNECTED') && method === 'usb' && (
               <USBDiscoveryPanel
                 pairing={pairing}
                 onRetry={() => pairing.discoverUSB()}
               />
             )}
 
-            {/* Verify */}
-            {pairing.step === 'verifying' && (
-              <VerifyPanel pairing={pairing} />
+            {/* Verification */}
+            {(pairing.step === 'VERIFYING' || pairing.step === 'VERIFIED') && (
+              <VerifyPanel
+                pairing={pairing}
+                progress={pairing.progress}
+              />
             )}
 
             {/* Trust */}
-            {pairing.step === 'trusting' && dev && (
-              <TrustPanel pairing={pairing} deviceName={dev.device_name || dev.model || 'Device'} />
+            {(pairing.step === 'TRUST_PENDING' || pairing.step === 'TRUSTED') && dev && (
+              <TrustPanel
+                pairing={pairing}
+                deviceName={dev.device_name || dev.model || 'Device'}
+              />
             )}
 
             {/* Permissions */}
-            {pairing.step === 'permissions' && (
+            {(pairing.step === 'PERMISSION_SYNC' || pairing.step === 'REGISTERING' || pairing.step === 'DEVICE_REGISTERED' || pairing.step === 'DEVICE_TWIN_CREATED' || pairing.step === 'AI_CHECK') && (
               <PermissionsPanel
                 onGrant={() => {
                   setPermissionsGranted(true);
@@ -196,11 +189,13 @@ function PairDevicePage() {
                   }
                 }}
                 loading={pairing.loading}
+                step={pairing.step}
+                progress={pairing.progress}
               />
             )}
 
             {/* Ready */}
-            {pairing.step === 'ready' && (
+            {(pairing.step === 'READY' || pairing.step === 'ACTIVE') && (
               <ReadyPanel
                 deviceName={dev?.device_name || dev?.model || 'Device'}
                 capabilities={pairing.twin?.capabilities || [
@@ -214,7 +209,7 @@ function PairDevicePage() {
           {/* Right: Live Device Status */}
           <aside className={`space-y-4 transition-all duration-500 ${mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`} style={{ transitionDelay: "400ms" }}>
             {(() => {
-              const showLive = pairing.step !== 'idle' && pairing.step !== 'error';
+              const showLive = pairing.step !== 'IDLE' && !isError;
               if (!showLive) return null;
               return (
                 <LiveDeviceCard
@@ -229,21 +224,56 @@ function PairDevicePage() {
                   foreground={pairing.liveHeartbeat?.foreground_app || dev?.foreground_app || ''}
                   lockState={pairing.liveHeartbeat?.lock_state || dev?.lock_state || 'unknown'}
                   online={pairing.isOnline}
-                  connected={pairing.step === 'ready'}
-                  scanning={pairing.step === 'discovering'}
+                  connected={pairing.step === 'READY' || pairing.step === 'ACTIVE'}
+                  scanning={pairing.step === 'DISCOVERING'}
                 />
               );
             })()}
 
             <ConnectionStatusPanel
               method={method}
-              connected={pairing.step === 'ready' || pairing.step === 'twin_creating' || pairing.step === 'registering'}
-              verified={pairing.step === 'verifying' || STEP_ORDER[pairing.step] >= 2}
-              trusted={pairing.step === 'trusting' || STEP_ORDER[pairing.step] >= 3}
-              aiReady={pairing.step === 'ready'}
+              connected={pairing.step === 'READY' || pairing.step === 'ACTIVE'}
+              verified={STEP_ORDER[pairing.step] >= 2}
+              trusted={pairing.trusted || STEP_ORDER[pairing.step] >= 3}
+              aiReady={pairing.step === 'READY' || pairing.step === 'ACTIVE'}
             />
           </aside>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Error Panel ─── */
+function ErrorPanel({ error, onRetry, onCancel }: { error: string; onRetry: () => void; onCancel: () => void }) {
+  return (
+    <div className="glass rounded-2xl p-6 slide-in-up">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="h-8 w-8 rounded-full bg-red-500/10 flex items-center justify-center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+        </div>
+        <div>
+          <p className="text-[13px] font-medium text-red-500">Pairing Error</p>
+          <p className="text-[11px] text-muted-foreground">{error}</p>
+        </div>
+      </div>
+      <div className="flex gap-3">
+        <button
+          onClick={onRetry}
+          className="flex-1 py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
+        >
+          Retry
+        </button>
+        <button
+          onClick={onCancel}
+          className="flex-1 py-3 rounded-xl bg-surface border hairline text-[11px] uppercase tracking-[0.22em] font-medium hover:bg-surface/80 transition-all"
+        >
+          Cancel
+        </button>
       </div>
     </div>
   );
@@ -299,8 +329,9 @@ function MethodSelection({ onSelect }: { onSelect: (m: PairingMethod) => void })
 function USBDiscoveryPanel({ pairing, onRetry }: { pairing: ReturnType<typeof useDevicePairing>; onRetry: () => void }) {
   const dev = pairing.deviceInfo;
 
+  // Auto-connect when device is found
   useEffect(() => {
-    if (dev && pairing.step === 'discovering') {
+    if (dev && pairing.step === 'DEVICE_FOUND') {
       const t = setTimeout(() => pairing.connectUSB(), 500);
       return () => clearTimeout(t);
     }
@@ -328,7 +359,7 @@ function USBDiscoveryPanel({ pairing, onRetry }: { pairing: ReturnType<typeof us
               <ApaOrb size={60} state="thinking" />
               <p className="text-[13px] text-muted-foreground">Scanning for connected devices…</p>
               <div className="w-48 h-1 bg-[var(--color-border)] rounded-full overflow-hidden">
-                <div className="h-full bg-accent progress-shimmer rounded-full" style={{ width: "60%" }} />
+                <div className="h-full bg-accent progress-shimmer rounded-full" style={{ width: `${pairing.progress}%` }} />
               </div>
             </div>
           ) : (
@@ -361,9 +392,6 @@ function USBDiscoveryPanel({ pairing, onRetry }: { pairing: ReturnType<typeof us
               pairing.verifyDevice(pairing.serial);
             }
           }}
-          onTrust={() => {
-            if (pairing.deviceId) pairing.trustDevice(pairing.deviceId);
-          }}
           step={pairing.step}
           loading={pairing.loading}
         />
@@ -374,12 +402,11 @@ function USBDiscoveryPanel({ pairing, onRetry }: { pairing: ReturnType<typeof us
 
 /* ─── Found Device Card ─── */
 function FoundDeviceCard({
-  device, onConnect, onVerify, onTrust, step, loading,
+  device, onConnect, onVerify, step, loading,
 }: {
   device: USBDeviceInfo;
   onConnect: () => void;
   onVerify: () => void;
-  onTrust: () => void;
   step: string;
   loading: boolean;
 }) {
@@ -396,7 +423,7 @@ function FoundDeviceCard({
           <p className="text-[14px] font-medium">{device.device_name || device.model || 'Android Device'}</p>
           <p className="text-[11px] text-muted-foreground">{device.manufacturer} {device.model} · Android {device.android_version}</p>
         </div>
-        <span className={`h-2.5 w-2.5 rounded-full ${step === 'ready' ? 'status-online' : loading ? 'status-pairing apa-pulse' : 'status-pairing'}`} />
+        <span className={`h-2.5 w-2.5 rounded-full ${step === 'CONNECTED' || step === 'CONNECTING' ? 'status-pairing apa-pulse' : 'status-pairing'}`} />
       </div>
 
       <div className="grid grid-cols-3 gap-3 mb-4">
@@ -416,7 +443,7 @@ function FoundDeviceCard({
       </div>
 
       {/* Action buttons based on current step */}
-      {step === 'discovering' && (
+      {(step === 'DEVICE_FOUND' || step === 'DISCOVERING') && (
         <button
           onClick={onConnect}
           disabled={loading}
@@ -426,7 +453,7 @@ function FoundDeviceCard({
         </button>
       )}
 
-      {step === 'connecting' && (
+      {step === 'CONNECTED' && (
         <button
           onClick={onVerify}
           disabled={loading}
@@ -436,22 +463,13 @@ function FoundDeviceCard({
         </button>
       )}
 
-      {step === 'verifying' && (
-        <button
-          onClick={onTrust}
-          disabled={loading}
-          className="w-full py-2.5 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
-        >
-          {loading ? 'Processing…' : 'Trust Device'}
-        </button>
-      )}
-
-      {(step === 'trusting' || step === 'permissions' || step === 'registering' || step === 'twin_creating') && (
-        <div className="flex items-center justify-center gap-2 py-2 text-[11px] text-[color:var(--color-success)]">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="animate-spin">
-            <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      {step === 'CONNECTING' && (
+        <div className="flex items-center justify-center gap-2 py-2 text-[11px] text-accent">
+          <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" opacity="0.3" />
+            <path d="M12 2a10 10 0 019.95 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
-          {step === 'trusting' ? 'Trusting…' : step === 'permissions' ? 'Configuring…' : step === 'registering' ? 'Registering…' : 'Creating twin…'}
+          Connecting…
         </div>
       )}
     </div>
@@ -459,31 +477,7 @@ function FoundDeviceCard({
 }
 
 /* ─── Verify Panel ─── */
-function VerifyPanel({ pairing }: { pairing: ReturnType<typeof useDevicePairing> }) {
-  const [checks, setChecks] = useState([
-    { label: "Device fingerprint", done: false },
-    { label: "ADB authorization", done: false },
-    { label: "Hardware identity", done: false },
-  ]);
-
-  useEffect(() => {
-    checks.forEach((_, i) => {
-      setTimeout(() => {
-        setChecks(prev => prev.map((c, j) => j <= i ? { ...c, done: true } : c));
-      }, (i + 1) * 800);
-    });
-  }, []);
-
-  useEffect(() => {
-    const serial = pairing.serial;
-    if (checks.every(c => c.done) && serial) {
-      const t = setTimeout(() => {
-        if (pairing.deviceId) pairing.trustDevice(pairing.deviceId);
-      }, 500);
-      return () => clearTimeout(t);
-    }
-  }, [checks, pairing.serial, pairing.deviceId]);
-
+function VerifyPanel({ pairing, progress }: { pairing: ReturnType<typeof useDevicePairing>; progress: number }) {
   return (
     <div className="glass rounded-2xl p-6 slide-in-up">
       <div className="flex items-center gap-3 mb-6">
@@ -494,11 +488,18 @@ function VerifyPanel({ pairing }: { pairing: ReturnType<typeof useDevicePairing>
         </div>
         <div>
           <p className="text-[13px] font-medium">Device Verification</p>
-          <p className="text-[10px] text-muted-foreground">Confirming device identity…</p>
+          <p className="text-[10px] text-muted-foreground">
+            {pairing.step === 'VERIFIED' ? 'Device identity confirmed' : 'Confirming device identity…'}
+          </p>
         </div>
       </div>
+
       <div className="space-y-3">
-        {checks.map((item) => (
+        {[
+          { label: "Hardware fingerprint", done: pairing.step === 'VERIFIED' || pairing.progress >= 50 },
+          { label: "ADB authorization", done: pairing.step === 'VERIFIED' || pairing.progress >= 50 },
+          { label: "Device identity", done: pairing.step === 'VERIFIED' || pairing.progress >= 50 },
+        ].map((item) => (
           <div key={item.label} className="flex items-center justify-between px-4 py-3 rounded-xl bg-surface/40">
             <span className="text-[12px]">{item.label}</span>
             <span className={`text-[10px] font-mono uppercase tracking-wider ${item.done ? "text-[color:var(--color-success)]" : "text-accent apa-pulse"}`}>
@@ -507,6 +508,28 @@ function VerifyPanel({ pairing }: { pairing: ReturnType<typeof useDevicePairing>
           </div>
         ))}
       </div>
+
+      {/* Progress bar */}
+      <div className="mt-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Progress</span>
+          <span className="text-[11px] font-mono text-accent">{progress}%</span>
+        </div>
+        <div className="h-1.5 bg-[var(--color-border)] rounded-full overflow-hidden">
+          <div className="h-full bg-accent rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+
+      {/* Auto-advance to trust when verified */}
+      {pairing.step === 'VERIFIED' && pairing.deviceId && (
+        <button
+          onClick={() => pairing.trustDevice(pairing.deviceId)}
+          disabled={pairing.loading}
+          className="mt-5 w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
+        >
+          {pairing.loading ? 'Processing…' : 'Continue to Trust'}
+        </button>
+      )}
     </div>
   );
 }
@@ -523,8 +546,12 @@ function TrustPanel({ pairing, deviceName }: { pairing: ReturnType<typeof useDev
           </svg>
         </div>
         <div>
-          <p className="text-[13px] font-medium">Trust Device</p>
-          <p className="text-[10px] text-muted-foreground">Authorize this device for AI control</p>
+          <p className="text-[13px] font-medium">
+            {pairing.step === 'TRUSTED' ? 'Device Trusted' : 'Trust Device'}
+          </p>
+          <p className="text-[10px] text-muted-foreground">
+            {pairing.step === 'TRUSTED' ? 'Device authorized for AI control' : 'Authorize this device for AI control'}
+          </p>
         </div>
       </div>
 
@@ -546,28 +573,40 @@ function TrustPanel({ pairing, deviceName }: { pairing: ReturnType<typeof useDev
         </p>
       </div>
 
-      <button
-        onClick={async () => {
-          if (!pairing.deviceId) return;
-          await pairing.trustDevice(pairing.deviceId);
-          if (pairing.deviceId) {
-            await pairing.syncPermissions(pairing.deviceId);
-          }
-        }}
-        disabled={pairing.loading}
-        className="w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
-      >
-        {pairing.loading ? 'Processing…' : 'Trust this device'}
-      </button>
+      {pairing.step === 'TRUST_PENDING' && (
+        <button
+          onClick={async () => {
+            if (!pairing.deviceId) return;
+            await pairing.trustDevice(pairing.deviceId);
+            if (pairing.deviceId) {
+              await pairing.syncPermissions(pairing.deviceId);
+            }
+          }}
+          disabled={pairing.loading}
+          className="w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
+        >
+          {pairing.loading ? 'Processing…' : 'Trust this device'}
+        </button>
+      )}
+
+      {pairing.step === 'TRUSTED' && (
+        <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-[color:var(--color-success)]">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M3 7L6 10L11 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          Device trusted - proceeding to permissions
+        </div>
+      )}
     </div>
   );
 }
 
 /* ─── Permissions Panel ─── */
 function PermissionsPanel({
-  onGrant, granted, onContinue, loading,
+  onGrant, granted, onContinue, loading, step, progress,
 }: {
   onGrant: () => void; granted: boolean; onContinue: () => void; loading: boolean;
+  step: string; progress: number;
 }) {
   return (
     <div className="glass rounded-2xl p-6 slide-in-up">
@@ -580,7 +619,14 @@ function PermissionsPanel({
         </div>
         <div>
           <p className="text-[13px] font-medium">Permission Review</p>
-          <p className="text-[10px] text-muted-foreground">Granting required capabilities via backend</p>
+          <p className="text-[10px] text-muted-foreground">
+            {step === 'PERMISSION_SYNC' ? 'Synchronizing permissions…' :
+             step === 'REGISTERING' ? 'Registering device…' :
+             step === 'DEVICE_REGISTERED' ? 'Device registered' :
+             step === 'DEVICE_TWIN_CREATED' ? 'Creating digital twin…' :
+             step === 'AI_CHECK' ? 'Checking AI readiness…' :
+             'Granting required capabilities'}
+          </p>
         </div>
       </div>
 
@@ -610,12 +656,26 @@ function PermissionsPanel({
         ))}
       </div>
 
+      {/* Progress bar for post-grant steps */}
+      {(granted || step !== 'PERMISSION_SYNC') && (
+        <div className="mt-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Progress</span>
+            <span className="text-[11px] font-mono text-accent">{progress}%</span>
+          </div>
+          <div className="h-1.5 bg-[var(--color-border)] rounded-full overflow-hidden">
+            <div className="h-full bg-accent rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      )}
+
       {!granted ? (
         <button
           onClick={onGrant}
-          className="mt-5 w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all"
+          disabled={loading}
+          className="mt-5 w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium hover:brightness-110 transition-all disabled:opacity-50"
         >
-          Grant all permissions
+          {loading ? 'Syncing…' : 'Grant all permissions'}
         </button>
       ) : (
         <button
@@ -623,7 +683,7 @@ function PermissionsPanel({
           disabled={loading}
           className="mt-5 w-full py-3 rounded-xl bg-accent text-accent-foreground text-[11px] uppercase tracking-[0.22em] font-medium transition-all duration-300 disabled:opacity-50 hover:brightness-110"
         >
-          {loading ? 'Registering & creating twin…' : 'Continue to ready'}
+          {loading ? 'Processing…' : 'Continue to ready'}
         </button>
       )}
     </div>

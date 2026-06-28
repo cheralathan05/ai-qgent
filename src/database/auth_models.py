@@ -465,10 +465,20 @@ class PairingWorkflow(Base):
     user_id = Column(String(255), ForeignKey("users.id"), nullable=False, index=True)
     device_id = Column(String(255), ForeignKey("registered_devices.id"), nullable=True)
     session_id = Column(String(255), nullable=True)
+    desktop_id = Column(String(255), nullable=True)
 
-    # Current workflow state
-    workflow_state = Column(String(50), default="idle")  # idle, discovering, connecting, verifying, trusting, permissions, registering, twin_creating, ready, error
+    # Current workflow state - complete state machine
+    # Normal flow: IDLE -> DISCOVERING -> DEVICE_FOUND -> CONNECTING -> CONNECTED -> VERIFYING -> VERIFIED -> TRUST_PENDING -> TRUSTED -> PERMISSION_SYNC -> REGISTERING -> DEVICE_REGISTERED -> DEVICE_TWIN_CREATED -> AI_CHECK -> READY -> ACTIVE
+    # Error states: USB_DISCONNECTED, ADB_OFFLINE, ADB_UNAUTHORIZED, VERIFICATION_FAILED, TIMEOUT, DEVICE_REMOVED, SESSION_EXPIRED, PAIRING_FAILED, CANCELLED
+    workflow_state = Column(String(50), default="IDLE")
     pairing_type = Column(String(50), default="usb")  # usb, wireless, qr
+
+    # Progress percentage (0-100)
+    progress = Column(Integer, default=0)
+
+    # Connection status
+    connected = Column(Boolean, default=False)
+    is_online = Column(Boolean, default=False)
 
     # Device info at time of pairing
     serial = Column(String(255), nullable=True)
@@ -482,6 +492,7 @@ class PairingWorkflow(Base):
 
     # Fingerprint from verification
     device_fingerprint = Column(String(255), nullable=True)
+    fingerprint_data = Column(JSON, nullable=True)
 
     # Error tracking
     error_message = Column(Text, nullable=True)
@@ -497,6 +508,7 @@ class PairingWorkflow(Base):
     registered_at = Column(DateTime, nullable=True)
     twin_created_at = Column(DateTime, nullable=True)
     ready_at = Column(DateTime, nullable=True)
+    expired_at = Column(DateTime, nullable=True)
 
     started_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)

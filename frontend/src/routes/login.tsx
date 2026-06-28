@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { ApaOrb } from "@/components/apa/ApaOrb";
 import { ParticleField } from "@/components/apa/ParticleField";
 import { authApi } from "@/lib/api/auth";
+import { pairingApi } from "@/lib/api/pairing";
 import { loginUser } from "@/lib/apa/enterprise";
 import { AxiosError } from "axios";
 
@@ -49,8 +50,23 @@ function LoginPage() {
           created_at: res.user.created_at,
           accessToken: res.accessToken,
           refreshToken: res.refreshToken,
+          session_id: res.session_id,
         });
-        navigate({ to: "/pair-device" });
+
+        // After login, always check current device state from backend (no cache)
+        try {
+          const deviceState = await pairingApi.getCurrentDevice(res.accessToken);
+          if (deviceState.connected && deviceState.device) {
+            // Device is connected - go to dashboard
+            navigate({ to: "/dashboard" });
+          } else {
+            // No device connected - go to pairing
+            navigate({ to: "/pair-device" });
+          }
+        } catch {
+          // If device check fails, go to pairing page
+          navigate({ to: "/pair-device" });
+        }
       }
     } catch (err) {
       const axiosErr = err as AxiosError<{ detail: string }>;

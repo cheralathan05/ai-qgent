@@ -431,7 +431,7 @@ class AuthService:
             return AuthResult(success=False, message=str(e))
 
     def logout(self, session_id: str) -> AuthResult:
-        """Logout user and revoke session"""
+        """Logout user and revoke session. Clears all pairing/device state."""
         session = self._get_session()
         try:
             user_session = session.query(UserSession).filter(
@@ -442,10 +442,20 @@ class AuthService:
             if not user_session:
                 return AuthResult(success=False, message="Session not found")
 
+            user_id = user_session.user_id
             user_session.status = "revoked"
             session.commit()
 
-            logger.info(f"User logout: {user_session.user_id}")
+            # Clear all pairing workflow state for this user
+            try:
+                from services.pairing_workflow_service import get_pairing_workflow_service
+                svc = get_pairing_workflow_service()
+                svc.cancel_all_for_user(user_id, reason="User logout")
+                logger.info(f"Cleared pairing state for user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to clear pairing state on logout: {e}")
+
+            logger.info(f"User logout: {user_id}")
             return AuthResult(success=True, message="Logout successful")
         finally:
             session.close()

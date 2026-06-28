@@ -68,6 +68,7 @@ export interface UserProfile {
   created_at: string;
   accessToken: string;
   refreshToken: string;
+  session_id?: string;
 }
 
 export interface EnterpriseState {
@@ -172,13 +173,44 @@ export function loginUser(user: UserProfile) {
   localStorage.setItem('accessToken', user.accessToken);
   localStorage.setItem('refreshToken', user.refreshToken);
   localStorage.setItem('user', JSON.stringify(user));
+  if (user.session_id) {
+    localStorage.setItem('session_id', user.session_id);
+  }
   entStore.set(s => ({ ...s, authenticated: true, user }));
 }
 
 export function logoutUser() {
+  // Call backend to revoke session (fire-and-forget)
+  const sessionId = localStorage.getItem('session_id');
+  if (sessionId) {
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    }).catch(() => {});
+  }
+
+  // Clear all auth tokens
   localStorage.removeItem('accessToken');
   localStorage.removeItem('refreshToken');
   localStorage.removeItem('user');
+  localStorage.removeItem('session_id');
+
+  // Clear all pairing/device/WebSocket state
+  localStorage.removeItem('apa-os:device-pairing');
+  localStorage.removeItem('pairing_workflow_id');
+  localStorage.removeItem('pairing_serial');
+  localStorage.removeItem('pairing_device_id');
+  localStorage.removeItem('pairing_step');
+  localStorage.removeItem('pairing_trusted');
+  localStorage.removeItem('device_connected');
+  localStorage.removeItem('device_id');
+  localStorage.removeItem('pairing_ws');
+
+  // Clear React Query cache marker
+  localStorage.removeItem('apa-os:query-cache');
+
+  // Reset enterprise state
   entStore.set(s => ({ ...s, authenticated: false, user: null, onboardingComplete: false }));
 }
 

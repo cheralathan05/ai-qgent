@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { pairingApi, type USBDeviceInfo, type PairingStep, type DeviceTwin, type HeartbeatData } from '@/lib/api/pairing';
+import { pairingApi, type USBDeviceInfo, type NonErrorPairingStep, type DeviceTwin, type HeartbeatData, type WorkflowStatus, ERROR_STATES, CONNECTED_STATES } from '@/lib/api/pairing';
 
 export interface PairingState {
-  step: PairingStep;
+  step: NonErrorPairingStep | 'error';
+  progress: number;
+  message: string;
   workflowId: string | null;
   serial: string | null;
   deviceId: string | null;
@@ -10,13 +12,18 @@ export interface PairingState {
   twin: DeviceTwin | null;
   liveHeartbeat: HeartbeatData | null;
   isOnline: boolean;
+  isConnected: boolean;
+  paired: boolean;
+  trusted: boolean;
   error: string | null;
   loading: boolean;
 }
 
 export function useDevicePairing() {
   const [state, setState] = useState<PairingState>({
-    step: 'idle',
+    step: 'IDLE',
+    progress: 0,
+    message: 'Ready to pair',
     workflowId: null,
     serial: null,
     deviceId: null,
@@ -24,6 +31,9 @@ export function useDevicePairing() {
     twin: null,
     liveHeartbeat: null,
     isOnline: false,
+    isConnected: false,
+    paired: false,
+    trusted: false,
     error: null,
     loading: false,
   });
@@ -31,60 +41,109 @@ export function useDevicePairing() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const getToken = useCallback(() => {
     return localStorage.getItem('accessToken') || undefined;
   }, []);
 
+  // Apply workflow status to state
+  const applyStatus = useCallback((status: WorkflowStatus, deviceInfo?: USBDeviceInfo | null) => {
+    const newStep = status.state || 'IDLE';
+    const isErrorStep = ERROR_STATES.has(newStep as NonErrorPairingStep);
+    const isConnectedStep = CONNECTED_STATES.has(newStep as NonErrorPairingStep);
+
+    setState(s => ({
+      ...s,
+      step: isErrorStep ? 'error' : (newStep as NonErrorPairingStep),
+      progress: status.progress ?? s.progress,
+      message: status.message ?? s.message,
+      workflowId: status.workflow_id ?? s.workflowId,
+      serial: status.serial ?? s.serial,
+      deviceId: status.device_id ?? s.deviceId,
+      isOnline: status.connected ?? s.isOnline,
+      isConnected: isConnectedStep,
+      paired: status.paired ?? s.paired,
+      trusted: status.trusted ?? s.trusted,
+      error: status.error_message ?? (isErrorStep ? status.state : null),
+      loading: false,
+      deviceInfo: deviceInfo !== undefined ? (deviceInfo ?? s.deviceInfo) : s.deviceInfo,
+    }));
+  }, []);
+
+  // Poll backend status every 3 seconds
+  const startPolling = useCallback(() => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const status = await pairingApi.getStatus(getToken());
+        if (mountedRef.current) {
+          applyStatus(status);
+        }
+      } catch {
+        // Silently fail - will retry
+      }
+    }, 3000);
+  }, [getToken, applyStatus]);
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  }, []);
+
   // Check initial status
   const checkStatus = useCallback(async () => {
+    setState(s => ({ ...s, loading: true }));
     try {
       const status = await pairingApi.getStatus(getToken());
-      setState(s => ({
-        ...s,
-        step: status.workflow_state,
-        serial: status.active_session?.serial || null,
-        deviceId: status.active_session?.device_id || null,
-        deviceInfo: status.active_session ? {
-          serial: status.active_session.serial,
-          manufacturer: status.active_session.manufacturer,
-          model: status.active_session.model,
-          // Fill defaults for remaining fields
-          brand: '', android_version: '', sdk_version: 0, build_number: '',
-          battery_percentage: 0, charging: false, screen_width: 0, screen_height: 0,
-          cpu_abi: '', ram_total_kb: 0, storage_total_bytes: 0, foreground_app: '',
-          screen_on: false, lock_state: '', usb_debugging: false, developer_options: false,
-          accessibility_service: false, device_name: '', adb_authorized: false, connection_quality: '',
-        } : null,
-        isOnline: status.devices.some(d => d.is_online),
-      }));
+      if (mountedRef.current) {
+        applyStatus(status);
+      }
       return status;
     } catch {
+      if (mountedRef.current) {
+        setState(s => ({ ...s, loading: false }));
+      }
       return null;
     }
-  }, [getToken]);
+  }, [getToken, applyStatus]);
 
   // USB Discovery
   const discoverUSB = useCallback(async () => {
-    setState(s => ({ ...s, loading: true, error: null, step: 'discovering' }));
+    setState(s => ({ ...s, loading: true, error: null }));
     try {
       const result = await pairingApi.discoverUSB(getToken());
-      if (result.devices_found > 0) {
-        const device = result.devices[0];
-        setState(s => ({
-          ...s,
-          step: 'discovering',
-          serial: device.serial,
-          deviceInfo: device,
-          loading: false,
-        }));
-        return result;
+      if (mountedRef.current) {
+        if (result.devices_found > 0) {
+          setState(s => ({
+            ...s,
+            step: 'DEVICE_FOUND',
+            serial: result.devices[0].serial,
+            deviceInfo: result.devices[0],
+            loading: false,
+          }));
+        } else {
+          setState(s => ({
+            ...s,
+            step: 'DISCOVERING',
+            loading: false,
+            error: result.message || 'No USB devices found',
+          }));
+        }
       }
-      setState(s => ({ ...s, step: 'idle', loading: false, error: 'No USB devices found' }));
       return result;
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Discovery failed';
-      setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      if (mountedRef.current) {
+        setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      }
       return null;
     }
   }, [getToken]);
@@ -96,22 +155,26 @@ export function useDevicePairing() {
       setState(s => ({ ...s, error: 'No device serial', step: 'error' }));
       return null;
     }
-    setState(s => ({ ...s, loading: true, error: null, step: 'connecting' }));
+    setState(s => ({ ...s, loading: true, error: null }));
     try {
       const result = await pairingApi.connectUSB(deviceSerial, getToken());
-      setState(s => ({
-        ...s,
-        step: 'connecting',
-        workflowId: result.workflow_id,
-        deviceId: result.workflow_id,
-        serial: result.serial,
-        deviceInfo: result.device_info,
-        loading: false,
-      }));
+      if (mountedRef.current) {
+        setState(s => ({
+          ...s,
+          step: result.state as NonErrorPairingStep || 'CONNECTED',
+          progress: result.progress ?? 25,
+          workflowId: result.workflow_id,
+          serial: result.serial,
+          deviceInfo: result.device_info,
+          loading: false,
+        }));
+      }
       return result;
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Connection failed';
-      setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      if (mountedRef.current) {
+        setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      }
       return null;
     }
   }, [state.serial, getToken]);
@@ -123,14 +186,40 @@ export function useDevicePairing() {
       setState(s => ({ ...s, error: 'No device serial', step: 'error' }));
       return null;
     }
-    setState(s => ({ ...s, loading: true, step: 'verifying' }));
+    setState(s => ({ ...s, loading: true }));
     try {
       const result = await pairingApi.verifyUSB(deviceSerial, getToken());
-      setState(s => ({ ...s, step: 'verifying', loading: false, error: null }));
+      if (mountedRef.current) {
+        if (result.state === 'VERIFICATION_FAILED' || result.state === 'TIMEOUT' || !result.success) {
+          setState(s => ({
+            ...s,
+            step: 'error',
+            loading: false,
+            error: result.message || 'Verification failed',
+          }));
+        } else if (result.state === 'VERIFIED') {
+          setState(s => ({
+            ...s,
+            step: 'VERIFIED',
+            progress: 50,
+            loading: false,
+            error: null,
+          }));
+        } else {
+          setState(s => ({
+            ...s,
+            step: result.state as NonErrorPairingStep,
+            progress: result.progress ?? 35,
+            loading: false,
+          }));
+        }
+      }
       return result;
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Verification failed';
-      setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      if (mountedRef.current) {
+        setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      }
       return null;
     }
   }, [state.serial, getToken]);
@@ -142,14 +231,24 @@ export function useDevicePairing() {
       setState(s => ({ ...s, error: 'No device ID', step: 'error' }));
       return null;
     }
-    setState(s => ({ ...s, loading: true, step: 'trusting' }));
+    setState(s => ({ ...s, loading: true }));
     try {
       const result = await pairingApi.trustDevice(devId, 'always_trusted', getToken());
-      setState(s => ({ ...s, step: 'trusting', loading: false }));
+      if (mountedRef.current) {
+        setState(s => ({
+          ...s,
+          step: result.state as NonErrorPairingStep || 'TRUSTED',
+          progress: result.progress ?? 60,
+          loading: false,
+          trusted: true,
+        }));
+      }
       return result;
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Trust failed';
-      setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      if (mountedRef.current) {
+        setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      }
       return null;
     }
   }, [state.deviceId, getToken]);
@@ -171,14 +270,23 @@ export function useDevicePairing() {
       camera: 'granted',
       microphone: 'granted',
     };
-    setState(s => ({ ...s, loading: true, step: 'permissions' }));
+    setState(s => ({ ...s, loading: true }));
     try {
       const result = await pairingApi.syncPermissions(devId, perms, getToken());
-      setState(s => ({ ...s, step: 'permissions', loading: false }));
+      if (mountedRef.current) {
+        setState(s => ({
+          ...s,
+          step: result.state as NonErrorPairingStep || 'PERMISSION_SYNC',
+          progress: result.progress ?? 65,
+          loading: false,
+        }));
+      }
       return result;
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Permission sync failed';
-      setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      if (mountedRef.current) {
+        setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      }
       return null;
     }
   }, [state.deviceId, getToken]);
@@ -190,45 +298,56 @@ export function useDevicePairing() {
       setState(s => ({ ...s, error: 'No device serial', step: 'error' }));
       return null;
     }
-    setState(s => ({ ...s, loading: true, step: 'registering' }));
+    setState(s => ({ ...s, loading: true }));
     try {
       const result = await pairingApi.registerDevice(deviceSerial, getToken());
-      setState(s => ({
-        ...s,
-        step: 'registering',
-        deviceId: result.device_id,
-        deviceInfo: s.deviceInfo ? { ...s.deviceInfo, device_name: result.device_name } : s.deviceInfo,
-        loading: false,
-      }));
+      if (mountedRef.current) {
+        setState(s => ({
+          ...s,
+          step: result.state as NonErrorPairingStep || 'DEVICE_REGISTERED',
+          progress: result.progress ?? 75,
+          deviceId: result.device_id,
+          deviceInfo: s.deviceInfo ? { ...s.deviceInfo, device_name: result.device_name } : s.deviceInfo,
+          loading: false,
+        }));
+      }
       return result;
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Registration failed';
-      setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      if (mountedRef.current) {
+        setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      }
       return null;
     }
   }, [state.serial, getToken]);
 
-  // Create Device Twin
+  // Create Device Twin (also transitions to READY)
   const createTwin = useCallback(async (serial?: string) => {
     const deviceSerial = serial || state.serial;
     if (!deviceSerial) {
       setState(s => ({ ...s, error: 'No device serial', step: 'error' }));
       return null;
     }
-    setState(s => ({ ...s, loading: true, step: 'twin_creating' }));
+    setState(s => ({ ...s, loading: true }));
     try {
       const result = await pairingApi.createDeviceTwin(deviceSerial, getToken());
-      setState(s => ({
-        ...s,
-        step: 'ready',
-        deviceId: result.device_id,
-        twin: result.twin,
-        loading: false,
-      }));
+      if (mountedRef.current) {
+        setState(s => ({
+          ...s,
+          step: result.state as NonErrorPairingStep || 'READY',
+          progress: result.progress ?? 95,
+          deviceId: result.device_id,
+          twin: result.twin,
+          isConnected: true,
+          loading: false,
+        }));
+      }
       return result;
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Twin creation failed';
-      setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      if (mountedRef.current) {
+        setState(s => ({ ...s, step: 'error', loading: false, error: msg }));
+      }
       return null;
     }
   }, [state.serial, getToken]);
@@ -240,14 +359,18 @@ export function useDevicePairing() {
     try {
       await pairingApi.disconnectDevice(devId, getToken());
     } catch {}
-    setState({
-      step: 'idle', workflowId: null, serial: null, deviceId: null,
-      deviceInfo: null, twin: null, liveHeartbeat: null, isOnline: false,
-      error: null, loading: false,
-    });
+    if (mountedRef.current) {
+      setState({
+        step: 'IDLE', progress: 0, message: 'Ready to pair',
+        workflowId: null, serial: null, deviceId: null,
+        deviceInfo: null, twin: null, liveHeartbeat: null,
+        isOnline: false, isConnected: false, paired: false, trusted: false,
+        error: null, loading: false,
+      });
+    }
   }, [state.deviceId, getToken]);
 
-  // WebSocket connection for live updates
+  // WebSocket connection for real-time pairing events
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
@@ -257,10 +380,10 @@ export function useDevicePairing() {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        // Subscribe to device updates
-        if (state.deviceId) {
-          ws.send(JSON.stringify({ type: 'subscribe', device_id: state.deviceId }));
-        }
+        // Send auth token
+        const token = getToken();
+        ws.send(JSON.stringify({ type: 'auth', token }));
+
         // Start sending regular pings
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
         heartbeatIntervalRef.current = setInterval(() => {
@@ -273,9 +396,65 @@ export function useDevicePairing() {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          const eventType = msg.event || msg.type;
+          const eventType = msg.event || '';
 
-          if (eventType === 'HEARTBEAT') {
+          // Handle state sync events from the backend
+          if (eventType === 'STATE_SYNC' && msg.data) {
+            if (mountedRef.current) applyStatus(msg.data);
+          } else if (eventType === 'DISCOVERING' || eventType === 'DEVICE_FOUND') {
+            if (mountedRef.current) applyStatus(msg.data);
+          } else if (eventType === 'CONNECTING' || eventType === 'CONNECTED') {
+            if (mountedRef.current) applyStatus(msg.data);
+          } else if (eventType === 'VERIFYING' || eventType === 'VERIFIED') {
+            if (mountedRef.current) applyStatus(msg.data);
+          } else if (eventType === 'TRUSTED') {
+            if (mountedRef.current) {
+              setState(s => ({ ...s, trusted: true }));
+              applyStatus(msg.data);
+            }
+          } else if (eventType === 'PERMISSIONS') {
+            if (mountedRef.current) applyStatus(msg.data);
+          } else if (eventType === 'REGISTERING' || eventType === 'DEVICE_REGISTERED') {
+            if (mountedRef.current) applyStatus(msg.data);
+          } else if (eventType === 'DEVICE_TWIN_CREATED' || eventType === 'READY' || eventType === 'ACTIVE') {
+            if (mountedRef.current) {
+              applyStatus(msg.data);
+            }
+          } else if (eventType === 'USB_DISCONNECTED' || eventType === 'DEVICE_REMOVED') {
+            if (mountedRef.current) {
+              setState(s => ({
+                ...s,
+                step: 'error',
+                isOnline: false,
+                isConnected: false,
+                error: msg.data?.message || 'Device disconnected',
+              }));
+            }
+          } else if (eventType === 'VERIFICATION_FAILED' || eventType === 'TIMEOUT' || eventType === 'PAIRING_FAILED') {
+            if (mountedRef.current) {
+              setState(s => ({
+                ...s,
+                step: 'error',
+                error: msg.data?.error_message || msg.data?.message || 'Pairing failed',
+              }));
+            }
+          } else if (eventType === 'CANCELLED') {
+            if (mountedRef.current) {
+              setState(s => ({
+                ...s,
+                step: 'IDLE',
+                error: msg.data?.message || 'Cancelled',
+              }));
+            }
+          } else if (eventType === 'SESSION_CANCELLED') {
+            if (mountedRef.current) {
+              setState(s => ({
+                ...s,
+                step: 'error',
+                error: 'Another pairing session started',
+              }));
+            }
+          } else if (eventType === 'HEARTBEAT') {
             setState(s => ({
               ...s,
               liveHeartbeat: {
@@ -308,7 +487,6 @@ export function useDevicePairing() {
 
       ws.onclose = () => {
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-        // Auto reconnect after 3s
         if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = setTimeout(() => connectWebSocket(), 3000);
       };
@@ -317,48 +495,13 @@ export function useDevicePairing() {
         ws.close();
       };
     } catch {}
-  }, [state.deviceId]);
+  }, [getToken, applyStatus]);
 
-  // Run full pairing workflow
-  const runFullPairing = useCallback(async () => {
-    // Step 1: Discover
-    const discoverResult = await discoverUSB();
-    if (!discoverResult || discoverResult.devices_found === 0) return false;
-    const serial = discoverResult.devices[0].serial;
-
-    // Step 2: Connect
-    const connectResult = await connectUSB(serial);
-    if (!connectResult) return false;
-
-    // Step 3: Verify
-    const verifyResult = await verifyDevice(serial);
-    if (!verifyResult) return false;
-
-    // Step 4: Register
-    const registerResult = await registerDevice(serial);
-    if (!registerResult) return false;
-    const deviceId = registerResult.device_id;
-
-    // Step 5: Trust
-    const trustResult = await trustDevice(deviceId);
-    if (!trustResult) return false;
-
-    // Step 6: Permissions
-    const permResult = await syncPermissions(deviceId);
-    if (!permResult) return false;
-
-    // Step 7: Create Twin
-    const twinResult = await createTwin(serial);
-    if (!twinResult) return false;
-
-    // Connect WebSocket for live updates
-    connectWebSocket();
-    return true;
-  }, [discoverUSB, connectUSB, verifyDevice, registerDevice, trustDevice, syncPermissions, createTwin, connectWebSocket]);
-
-  // Cleanup on unmount
+  // Start polling when component mounts
   useEffect(() => {
+    startPolling();
     return () => {
+      stopPolling();
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
       if (wsRef.current) {
@@ -366,7 +509,14 @@ export function useDevicePairing() {
         wsRef.current = null;
       }
     };
-  }, []);
+  }, [startPolling, stopPolling]);
+
+  // Auto-connect WebSocket when a workflow is active
+  useEffect(() => {
+    if (state.workflowId && state.step !== 'IDLE' && state.step !== 'error') {
+      connectWebSocket();
+    }
+  }, [state.workflowId, state.step, connectWebSocket]);
 
   return {
     ...state,
@@ -380,6 +530,5 @@ export function useDevicePairing() {
     createTwin,
     disconnect,
     connectWebSocket,
-    runFullPairing,
   };
 }

@@ -2,16 +2,34 @@ import api from './client';
 import type { DeviceInfo } from '../apa/types';
 
 export type PairingStep =
-  | 'idle'
-  | 'discovering'
-  | 'connecting'
-  | 'verifying'
-  | 'trusting'
-  | 'permissions'
-  | 'registering'
-  | 'twin_creating'
-  | 'ready'
+  | 'IDLE'
+  | 'DISCOVERING'
+  | 'DEVICE_FOUND'
+  | 'CONNECTING'
+  | 'CONNECTED'
+  | 'VERIFYING'
+  | 'VERIFIED'
+  | 'TRUST_PENDING'
+  | 'TRUSTED'
+  | 'PERMISSION_SYNC'
+  | 'REGISTERING'
+  | 'DEVICE_REGISTERED'
+  | 'DEVICE_TWIN_CREATED'
+  | 'AI_CHECK'
+  | 'READY'
+  | 'ACTIVE'
+  | 'USB_DISCONNECTED'
+  | 'ADB_OFFLINE'
+  | 'ADB_UNAUTHORIZED'
+  | 'VERIFICATION_FAILED'
+  | 'TIMEOUT'
+  | 'DEVICE_REMOVED'
+  | 'SESSION_EXPIRED'
+  | 'PAIRING_FAILED'
+  | 'CANCELLED'
   | 'error';
+
+export type NonErrorPairingStep = Exclude<PairingStep, 'error'>;
 
 export interface USBDeviceInfo {
   serial: string;
@@ -41,27 +59,27 @@ export interface USBDeviceInfo {
   device_id?: string;
 }
 
-export interface PairingStatus {
-  success: boolean;
-  user_id?: string;
-  workflow_state: PairingStep;
+export interface WorkflowStatus {
+  workflow_id: string | null;
+  state: NonErrorPairingStep;
+  progress: number;
+  message: string;
   has_active_session: boolean;
-  active_session: {
-    id: string;
-    state: string;
-    serial: string;
-    manufacturer: string;
-    model: string;
-    device_id: string;
-    error_message: string;
-  } | null;
+  device_id: string | null;
+  serial: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  connected: boolean;
+  error_message: string | null;
+  error_code: string | null;
   paired: boolean;
   trusted: boolean;
-  trusted_count: number;
   device_count: number;
-  usb_connected_count: number;
-  usb_devices: { serial: string; state: string }[];
   devices: DeviceInfo[];
+}
+
+export interface PairingStatus extends WorkflowStatus {
+  success: boolean;
 }
 
 export interface DeviceTwin {
@@ -110,6 +128,81 @@ export interface HeartbeatData {
   accessibility_active: boolean;
 }
 
+export interface CurrentDeviceResponse {
+  success: boolean;
+  connected: boolean;
+  state: NonErrorPairingStep;
+  device: (DeviceInfo & {
+    charging: boolean;
+    foreground_app: string | null;
+    foreground_package: string | null;
+    screen_state: string | null;
+    lock_state: string | null;
+    network_type: string | null;
+    network_strength: number | null;
+    memory_usage_mb: number | null;
+    cpu_usage_percent: number | null;
+    twin: {
+      readiness_score: number | null;
+      ai_ready: boolean;
+      health_score: number | null;
+      trust_score: number | null;
+      sync_state: string;
+    } | null;
+  }) | null;
+  message?: string;
+}
+
+// Map of states that should show error UI
+export const ERROR_STATES: Set<NonErrorPairingStep> = new Set([
+  'USB_DISCONNECTED', 'ADB_OFFLINE', 'ADB_UNAUTHORIZED',
+  'VERIFICATION_FAILED', 'TIMEOUT', 'DEVICE_REMOVED',
+  'SESSION_EXPIRED', 'PAIRING_FAILED', 'CANCELLED',
+]);
+
+// Map of states that indicate the device is fully connected
+export const CONNECTED_STATES: Set<NonErrorPairingStep> = new Set([
+  'READY', 'ACTIVE',
+]);
+
+// Ordered steps for step indicator display
+export const DISPLAY_STEPS: { key: NonErrorPairingStep; label: string; detail: string }[] = [
+  { key: 'DISCOVERING', label: 'Discover', detail: 'Find your device' },
+  { key: 'CONNECTING', label: 'Connect', detail: 'Establish link' },
+  { key: 'VERIFYING', label: 'Verify', detail: 'Confirm identity' },
+  { key: 'TRUSTED', label: 'Trust', detail: 'Authorize access' },
+  { key: 'PERMISSION_SYNC', label: 'Permissions', detail: 'Grant capabilities' },
+  { key: 'READY', label: 'Ready', detail: 'AI connected' },
+];
+
+export const STEP_ORDER: Record<string, number> = {
+  IDLE: -1,
+  DISCOVERING: 0,
+  DEVICE_FOUND: 0,
+  CONNECTING: 1,
+  CONNECTED: 1,
+  VERIFYING: 2,
+  VERIFIED: 2,
+  TRUST_PENDING: 3,
+  TRUSTED: 3,
+  PERMISSION_SYNC: 4,
+  REGISTERING: 4,
+  DEVICE_REGISTERED: 4,
+  DEVICE_TWIN_CREATED: 4,
+  AI_CHECK: 4,
+  READY: 5,
+  ACTIVE: 5,
+  USB_DISCONNECTED: -1,
+  ADB_OFFLINE: -1,
+  ADB_UNAUTHORIZED: -1,
+  VERIFICATION_FAILED: -1,
+  TIMEOUT: -1,
+  DEVICE_REMOVED: -1,
+  SESSION_EXPIRED: -1,
+  PAIRING_FAILED: -1,
+  CANCELLED: -1,
+};
+
 export const pairingApi = {
   async getStatus(token?: string) {
     const params: Record<string, string> = {};
@@ -125,6 +218,9 @@ export const pairingApi = {
       success: boolean;
       devices_found: number;
       devices: USBDeviceInfo[];
+      workflow_id?: string;
+      state?: string;
+      progress?: number;
       message?: string;
     }>('/api/pairing/usb/discover', {}, { params });
     return res.data;
@@ -138,6 +234,8 @@ export const pairingApi = {
       message: string;
       serial: string;
       workflow_id: string;
+      state: string;
+      progress: number;
       device_info: USBDeviceInfo;
     }>('/api/pairing/usb/connect', { serial }, { params });
     return res.data;
@@ -150,6 +248,9 @@ export const pairingApi = {
       success: boolean;
       message: string;
       serial: string;
+      workflow_id?: string;
+      state: string;
+      progress?: number;
       fingerprint: string;
       fingerprint_data: Record<string, string>;
       device_identity_confirmed: boolean;
@@ -164,6 +265,8 @@ export const pairingApi = {
       success: boolean;
       message: string;
       device_id: string;
+      state: string;
+      progress: number;
       trust_level: string;
       trust_token: string;
       certificate: string;
@@ -178,6 +281,8 @@ export const pairingApi = {
       success: boolean;
       message: string;
       device_id: string;
+      state: string;
+      progress: number;
       permissions: Record<string, string>;
     }>('/api/pairing/device/permissions', { device_id, permissions }, { params });
     return res.data;
@@ -190,6 +295,9 @@ export const pairingApi = {
       success: boolean;
       message: string;
       device_id: string;
+      workflow_id?: string;
+      state: string;
+      progress: number;
       device_name: string;
       manufacturer: string;
       model: string;
@@ -204,6 +312,9 @@ export const pairingApi = {
       success: boolean;
       message: string;
       device_id: string;
+      workflow_id?: string;
+      state: string;
+      progress: number;
       twin: DeviceTwin;
     }>('/api/pairing/device/twin/create', { serial }, { params });
     return res.data;
@@ -212,28 +323,7 @@ export const pairingApi = {
   async getCurrentDevice(token?: string) {
     const params: Record<string, string> = {};
     if (token) params.token = token;
-    const res = await api.get<{
-      success: boolean;
-      device: (DeviceInfo & {
-        charging: boolean;
-        foreground_app: string | null;
-        foreground_package: string | null;
-        screen_state: string | null;
-        lock_state: string | null;
-        network_type: string | null;
-        network_strength: number | null;
-        memory_usage_mb: number | null;
-        cpu_usage_percent: number | null;
-        twin: {
-          readiness_score: number | null;
-          ai_ready: boolean;
-          health_score: number | null;
-          trust_score: number | null;
-          sync_state: string;
-        } | null;
-      }) | null;
-      message?: string;
-    }>('/api/pairing/device/current', { params });
+    const res = await api.get<CurrentDeviceResponse>('/api/pairing/device/current', { params });
     return res.data;
   },
 
@@ -285,6 +375,6 @@ export const pairingApi = {
     const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
     const wsBase = baseUrl.replace(/^http/, 'ws');
     const token = localStorage.getItem('accessToken') || '';
-    return `${wsBase}/ws/device?token=${token}`;
+    return `${wsBase}/api/pairing/ws/pairing`;
   },
 };

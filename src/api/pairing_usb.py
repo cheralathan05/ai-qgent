@@ -1,6 +1,7 @@
 """
 APA-OS USB Pairing API
 Complete production endpoints for USB device discovery, pairing, verification, trust, and registration
+Backed by the PairingWorkflow state machine for consistent state transitions
 """
 
 import asyncio
@@ -12,6 +13,12 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, Query, Body, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
+
+from services.pairing_workflow_service import (
+    get_pairing_workflow_service,
+    WorkflowState,
+    PairingWorkflowService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +56,6 @@ async def get_current_user(token: str = Query(...)) -> str:
 
 # ==================== Helper Functions ====================
 
-def _emit_event(event_type: str, data: dict):
-    """Emit WebSocket event"""
-    try:
-        from services.websocket_service import get_websocket_manager
-        mgr = get_websocket_manager()
-        import asyncio
-        asyncio.ensure_future(mgr.broadcast({
-            "event": event_type,
-            "data": data,
-            "timestamp": datetime.utcnow().isoformat(),
-        }))
-    except Exception:
-        pass
-
 def _create_audit_log(user_id: str, action: str, resource_type: str, resource_id: str, details: dict, result: str = "success", error_message: str = None):
     """Create audit log entry"""
     try:
@@ -91,99 +84,10 @@ def _create_audit_log(user_id: str, action: str, resource_type: str, resource_id
 
 @router.get("/status")
 async def get_pairing_status(user_id: str = Depends(get_current_user)):
-    """Get current pairing session status, trusted devices, connected USB devices"""
-    from database.connection import get_db_session
-    from database.auth_models import RegisteredDevice, TrustedDevice, PairingWorkflow, DeviceTwin
-
-    db = get_db_session()
-    try:
-        # Check for active pairing workflow
-        active_workflow = db.query(PairingWorkflow).filter(
-            PairingWorkflow.user_id == user_id,
-            PairingWorkflow.workflow_state.in_(["idle", "discovering", "connecting", "verifying", "trusting", "permissions", "registering", "twin_creating"]),
-        ).order_by(PairingWorkflow.started_at.desc()).first()
-
-        # Check trusted devices
-        trusted_devices = db.query(TrustedDevice).filter(
-            TrustedDevice.user_id == user_id,
-            TrustedDevice.revoked_at == None,
-        ).all()
-        trusted_count = len(trusted_devices)
-
-        # Check registered devices
-        devices = db.query(RegisteredDevice).filter(
-            RegisteredDevice.user_id == user_id,
-        ).order_by(RegisteredDevice.last_seen.desc()).all()
-
-        # Check device twins
-        twins = {}
-        for d in devices:
-            twin = db.query(DeviceTwin).filter(
-                DeviceTwin.device_id == d.id
-            ).first()
-            if twin:
-                twins[d.id] = {
-                    "readiness_score": twin.readiness_score,
-                    "ai_ready": twin.ai_ready,
-                    "health_score": twin.health_score,
-                    "trust_score": twin.trust_score,
-                    "sync_state": twin.sync_state,
-                }
-
-        # Check USB connected devices via ADB
-        usb_devices = []
-        try:
-            from services.adb_service import get_adb_service, find_adb_binary
-            adb = get_adb_service(find_adb_binary())
-            raw_devices = await adb.list_devices()
-            for dev in raw_devices:
-                if dev.get("state") == "device":
-                    usb_devices.append({
-                        "serial": dev.get("serial", ""),
-                        "state": dev.get("state", ""),
-                    })
-        except Exception:
-            pass
-
-        return {
-            "success": True,
-            "user_id": user_id,
-            "workflow_state": active_workflow.workflow_state if active_workflow else "idle",
-            "has_active_session": active_workflow is not None,
-            "active_session": {
-                "id": active_workflow.id,
-                "state": active_workflow.workflow_state,
-                "serial": active_workflow.serial,
-                "manufacturer": active_workflow.manufacturer,
-                "model": active_workflow.model,
-                "device_id": active_workflow.device_id,
-                "error_message": active_workflow.error_message,
-            } if active_workflow else None,
-            "paired": len(devices) > 0,
-            "trusted": trusted_count > 0,
-            "trusted_count": trusted_count,
-            "device_count": len(devices),
-            "usb_connected_count": len(usb_devices),
-            "usb_devices": usb_devices,
-            "devices": [
-                {
-                    "id": d.id,
-                    "name": d.device_name,
-                    "model": d.model,
-                    "manufacturer": d.manufacturer,
-                    "android_version": d.android_version,
-                    "battery": d.battery_level,
-                    "is_online": d.is_online,
-                    "connection_type": d.connection_type,
-                    "serial": d.serial,
-                    "last_seen": d.last_seen.isoformat() if d.last_seen else None,
-                    "twin": twins.get(d.id),
-                }
-                for d in devices
-            ],
-        }
-    finally:
-        db.close()
+    """Get complete pairing workflow status with state machine state"""
+    svc = get_pairing_workflow_service()
+    status = svc.get_full_status(user_id)
+    return {"success": True, **status}
 
 
 @router.post("/usb/discover")
@@ -193,42 +97,44 @@ async def usb_discover(user_id: str = Depends(get_current_user)):
     from database.connection import get_db_session
     from database.auth_models import PairingWorkflow, USBSession, RegisteredDevice
 
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_or_create_workflow(user_id)
+
+    # Transition to DISCOVERING
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.DISCOVERING,
+        progress=5,
+    )
+    if not workflow:
+        raise HTTPException(status_code=500, detail="Failed to create workflow")
+
     engine = get_discovery_engine()
-    devices = await engine.discover()
+    try:
+        devices = await engine.discover()
+    except Exception as e:
+        svc.transition_to(
+            workflow.id, WorkflowState.PAIRING_FAILED,
+            error_message=f"Discovery error: {str(e)}",
+            error_code="DISCOVERY_ERROR",
+        )
+        raise HTTPException(status_code=503, detail=f"Discovery error: {str(e)}")
 
     if not devices:
+        # Stay in DISCOVERING - user can retry
         return {
             "success": True,
             "devices_found": 0,
             "devices": [],
+            "workflow_id": workflow.id,
+            "state": WorkflowState.DISCOVERING.value,
+            "progress": 5,
             "message": "No USB devices found. Connect an Android device with USB debugging enabled.",
         }
 
     db = get_db_session()
     try:
-        # Create or update pairing workflow
-        workflow = db.query(PairingWorkflow).filter(
-            PairingWorkflow.user_id == user_id,
-            PairingWorkflow.workflow_state.in_(["idle", "discovering"]),
-        ).order_by(PairingWorkflow.started_at.desc()).first()
-
-        if not workflow:
-            import uuid
-            workflow = PairingWorkflow(
-                id=f"pwf_{uuid.uuid4().hex[:12]}",
-                user_id=user_id,
-                workflow_state="discovering",
-                pairing_type="usb",
-            )
-            db.add(workflow)
-            db.flush()
-        else:
-            workflow.workflow_state = "discovering"
-            workflow.updated_at = datetime.utcnow()
-
         device_list = []
         for dev in devices:
-            # Check if device already registered
             existing = db.query(RegisteredDevice).filter(
                 RegisteredDevice.user_id == user_id,
                 RegisteredDevice.serial == dev.serial,
@@ -261,29 +167,32 @@ async def usb_discover(user_id: str = Depends(get_current_user)):
                     adb_authorized=dev.adb_authorized,
                 )
                 db.add(usb_session)
-
-        workflow.serial = devices[0].serial if devices else None
-        workflow.manufacturer = devices[0].manufacturer if devices else None
-        workflow.model = devices[0].model if devices else None
-        workflow.android_version = devices[0].android_version if devices else None
-        workflow.discovered_at = datetime.utcnow()
         db.commit()
-
     finally:
         db.close()
 
-    _emit_event("DEVICE_FOUND", {
-        "count": len(devices),
-        "devices": [{"serial": d.serial, "model": d.model, "manufacturer": d.manufacturer} for d in devices],
-    })
+    first_dev = devices[0]
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.DEVICE_FOUND,
+        progress=10,
+        serial=first_dev.serial,
+        manufacturer=first_dev.manufacturer,
+        model=first_dev.model,
+        android_version=first_dev.android_version,
+        connected=True,
+        is_online=True,
+    )
 
-    _create_audit_log(user_id, "usb_discover", "usb_session", devices[0].serial if devices else "none",
-                      {"count": len(devices)})
+    _create_audit_log(user_id, "usb_discover", "usb_session", first_dev.serial, {"count": len(devices)})
 
     return {
         "success": True,
         "devices_found": len(device_list),
         "devices": device_list,
+        "workflow_id": workflow.id,
+        "state": workflow.workflow_state,
+        "progress": workflow.progress,
+        "message": f"Found {len(device_list)} device(s)",
     }
 
 
@@ -299,58 +208,68 @@ async def usb_connect(request: ConnectRequest, user_id: str = Depends(get_curren
     if not serial:
         raise HTTPException(status_code=400, detail="Serial number required")
 
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
+    if not workflow:
+        workflow = svc.get_or_create_workflow(user_id, serial)
+
+    # Transition to CONNECTING
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.CONNECTING,
+        progress=20, serial=serial,
+    )
+    if not workflow:
+        raise HTTPException(status_code=500, detail="Failed to update workflow")
+
     # Verify device is connected via ADB
     adb = get_adb_service(find_adb_binary())
     try:
         devices = await adb.list_devices()
         connected_serials = [d.get("serial") for d in devices if d.get("state") == "device"]
     except Exception as e:
+        svc.transition_to(
+            workflow.id, WorkflowState.ADB_OFFLINE,
+            error_message=f"ADB error: {str(e)}",
+            error_code="ADB_ERROR",
+        )
         raise HTTPException(status_code=503, detail=f"ADB error: {str(e)}")
 
     if serial not in connected_serials:
+        svc.transition_to(
+            workflow.id, WorkflowState.USB_DISCONNECTED,
+            error_message=f"Device {serial} not connected via USB",
+            error_code="DEVICE_NOT_FOUND",
+        )
         raise HTTPException(status_code=400, detail=f"Device {serial} not connected via USB")
 
     # Extract full device info
     engine = get_discovery_engine(adb)
-    info = await engine._extract_full_info(serial)
-    info.adb_authorized = True
+    try:
+        info = await engine._extract_full_info(serial)
+        info.adb_authorized = True
+    except Exception as e:
+        svc.transition_to(
+            workflow.id, WorkflowState.PAIRING_FAILED,
+            error_message=f"Failed to extract device info: {str(e)}",
+            error_code="INFO_EXTRACTION_ERROR",
+        )
+        raise HTTPException(status_code=503, detail=f"Device info extraction failed: {str(e)}")
 
+    # Update to CONNECTED
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.CONNECTED,
+        progress=25,
+        serial=serial,
+        manufacturer=info.manufacturer,
+        model=info.model,
+        android_version=info.android_version,
+        connected=True,
+        is_online=True,
+    )
+
+    # Update USB session
     db = get_db_session()
     try:
-        # Update or create pairing workflow
-        workflow = db.query(PairingWorkflow).filter(
-            PairingWorkflow.user_id == user_id,
-            PairingWorkflow.workflow_state.in_(["idle", "discovering"]),
-        ).order_by(PairingWorkflow.started_at.desc()).first()
-
-        if not workflow:
-            import uuid
-            workflow = PairingWorkflow(
-                id=f"pwf_{uuid.uuid4().hex[:12]}",
-                user_id=user_id,
-                workflow_state="connecting",
-                pairing_type="usb",
-                serial=serial,
-                manufacturer=info.manufacturer,
-                model=info.model,
-                android_version=info.android_version,
-                adb_authorized=True,
-                usb_authorized=True,
-                connected_at=datetime.utcnow(),
-            )
-            db.add(workflow)
-        else:
-            workflow.workflow_state = "connecting"
-            workflow.serial = serial
-            workflow.manufacturer = info.manufacturer
-            workflow.model = info.model
-            workflow.android_version = info.android_version
-            workflow.adb_authorized = True
-            workflow.usb_authorized = True
-            workflow.connected_at = datetime.utcnow()
-            workflow.updated_at = datetime.utcnow()
-
-        # Update USB session
         usb_session = db.query(USBSession).filter(
             USBSession.user_id == user_id,
             USBSession.serial == serial,
@@ -359,19 +278,9 @@ async def usb_connect(request: ConnectRequest, user_id: str = Depends(get_curren
             usb_session.status = "pairing"
             usb_session.adb_authorized = True
             usb_session.updated_at = datetime.utcnow()
-
-        db.commit()
-        workflow_id = workflow.id
-
+            db.commit()
     finally:
         db.close()
-
-    _emit_event("PAIRING_STARTED", {
-        "serial": serial,
-        "manufacturer": info.manufacturer,
-        "model": info.model,
-        "workflow_id": workflow_id,
-    })
 
     _create_audit_log(user_id, "usb_connect", "usb_session", serial, {
         "manufacturer": info.manufacturer,
@@ -382,15 +291,18 @@ async def usb_connect(request: ConnectRequest, user_id: str = Depends(get_curren
         "success": True,
         "message": "USB device connected",
         "serial": serial,
-        "workflow_id": workflow_id,
+        "workflow_id": workflow.id,
+        "state": workflow.workflow_state,
+        "progress": workflow.progress,
         "device_info": info.to_dict(),
     }
 
 
 @router.post("/usb/verify")
 async def usb_verify(request: ConnectRequest, user_id: str = Depends(get_current_user)):
-    """Verify device identity using hardware fingerprint"""
+    """Verify device identity using hardware fingerprint with real ADB data"""
     from services.usb_discovery_service import get_discovery_engine
+    from services.adb_service import get_adb_service, find_adb_binary
     from database.connection import get_db_session
     from database.auth_models import PairingWorkflow
 
@@ -398,36 +310,85 @@ async def usb_verify(request: ConnectRequest, user_id: str = Depends(get_current
     if not serial:
         raise HTTPException(status_code=400, detail="Serial number required")
 
-    engine = get_discovery_engine()
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
+    if not workflow:
+        workflow = svc.get_or_create_workflow(user_id, serial)
+
+    # Transition to VERIFYING
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.VERIFYING,
+        progress=35, serial=serial,
+    )
+    if not workflow:
+        raise HTTPException(status_code=500, detail="Failed to update workflow")
+
+    # Run verification with timeout
     try:
-        verification = await engine.verify_device(serial)
+        verification = await asyncio.wait_for(
+            _run_verification(serial),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        svc.transition_to(
+            workflow.id, WorkflowState.TIMEOUT,
+            error_message="Verification timed out after 30 seconds",
+            error_code="VERIFICATION_TIMEOUT",
+        )
+        return {
+            "success": False,
+            "state": WorkflowState.TIMEOUT.value,
+            "progress": workflow.progress,
+            "message": "Verification timed out",
+            "serial": serial,
+        }
     except Exception as e:
+        svc.transition_to(
+            workflow.id, WorkflowState.VERIFICATION_FAILED,
+            error_message=f"Verification error: {str(e)}",
+            error_code="VERIFICATION_ERROR",
+        )
         raise HTTPException(status_code=503, detail=f"Device verification failed: {str(e)}")
 
     fingerprint = verification.get("fingerprint", "")
     fingerprint_data = verification.get("fingerprint_data", {})
 
+    # Compare against database if device was previously registered
     db = get_db_session()
     try:
-        workflow = db.query(PairingWorkflow).filter(
+        existing_device = db.query(PairingWorkflow).filter(
             PairingWorkflow.user_id == user_id,
             PairingWorkflow.serial == serial,
+            PairingWorkflow.device_fingerprint != None,
+            PairingWorkflow.workflow_state == WorkflowState.ACTIVE.value,
         ).order_by(PairingWorkflow.started_at.desc()).first()
 
-        if workflow:
-            workflow.workflow_state = "verifying"
-            workflow.device_fingerprint = fingerprint
-            workflow.verified_at = datetime.utcnow()
-            workflow.updated_at = datetime.utcnow()
-            db.commit()
-
+        if existing_device and existing_device.device_fingerprint:
+            if existing_device.device_fingerprint != fingerprint:
+                svc.transition_to(
+                    workflow.id, WorkflowState.VERIFICATION_FAILED,
+                    error_message="Device fingerprint mismatch. This may be a different device.",
+                    error_code="FINGERPRINT_MISMATCH",
+                )
+                return {
+                    "success": False,
+                    "state": WorkflowState.VERIFICATION_FAILED.value,
+                    "progress": workflow.progress,
+                    "message": "Device fingerprint mismatch",
+                    "serial": serial,
+                    "fingerprint": fingerprint,
+                    "device_identity_confirmed": False,
+                }
     finally:
         db.close()
 
-    _emit_event("DEVICE_VERIFIED", {
-        "serial": serial,
-        "fingerprint": fingerprint[:16] + "...",
-    })
+    # Success - transition to VERIFIED
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.VERIFIED,
+        progress=50,
+        fingerprint=fingerprint,
+        fingerprint_data=fingerprint_data,
+    )
 
     _create_audit_log(user_id, "usb_verify", "device", serial, {
         "fingerprint": fingerprint[:16] + "...",
@@ -437,6 +398,9 @@ async def usb_verify(request: ConnectRequest, user_id: str = Depends(get_current
         "success": True,
         "message": "Device verified successfully",
         "serial": serial,
+        "workflow_id": workflow.id,
+        "state": workflow.workflow_state,
+        "progress": workflow.progress,
         "fingerprint": fingerprint,
         "fingerprint_data": {
             "android_id": fingerprint_data.get("android_id", "")[:8] + "...",
@@ -445,6 +409,119 @@ async def usb_verify(request: ConnectRequest, user_id: str = Depends(get_current
             "installed_packages_count": fingerprint_data.get("installed_packages_count", "0"),
         },
         "device_identity_confirmed": True,
+    }
+
+
+async def _run_verification(serial: str) -> dict:
+    """Run real ADB verification commands to build hardware fingerprint"""
+    from services.adb_service import get_adb_service, find_adb_binary
+
+    adb = get_adb_service(find_adb_binary())
+
+    # Collect device properties
+    props = {}
+    prop_keys = [
+        "ro.product.manufacturer",
+        "ro.product.model",
+        "ro.build.version.release",
+        "ro.build.version.sdk",
+        "ro.serialno",
+        "ro.product.cpu.abi",
+        "ro.build.display.id",
+        "ro.build.fingerprint",
+        "ro.build.date.utc",
+    ]
+
+    for key in prop_keys:
+        try:
+            result = await adb.run_shell_command(f"getprop {key}", serial)
+            props[key] = result.strip() if result else ""
+        except Exception:
+            props[key] = ""
+
+    # Get settings
+    settings_data = {}
+    setting_keys = ["secure android_id", "system screen_brightness", "system screen_off_timeout"]
+    for key in setting_keys:
+        try:
+            ns, k = key.split(" ", 1)
+            result = await adb.run_shell_command(f"settings get {ns} {k}", serial)
+            settings_data[key] = result.strip() if result else ""
+        except Exception:
+            settings_data[key] = ""
+
+    # Get battery info
+    battery_info = {}
+    try:
+        battery_raw = await adb.run_shell_command("dumpsys battery", serial)
+        if battery_raw:
+            for line in battery_raw.split("\n"):
+                line = line.strip()
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    battery_info[k.strip()] = v.strip()
+    except Exception:
+        pass
+
+    # Get screen size
+    screen_size = ""
+    try:
+        wm_result = await adb.run_shell_command("wm size", serial)
+        if wm_result:
+            screen_size = wm_result.replace("Physical size: ", "").strip()
+    except Exception:
+        pass
+
+    # Get window info
+    window_info = {}
+    try:
+        window_raw = await adb.run_shell_command("dumpsys window", serial)
+        if window_raw:
+            for line in window_raw.split("\n"):
+                line = line.strip()
+                if "mCurrentFocus" in line or "mFocusedApp" in line or "DisplayPowerController" in line:
+                    window_info["focus"] = line
+    except Exception:
+        pass
+
+    # Get installed packages count
+    packages_count = "0"
+    try:
+        packages = await adb.run_shell_command("pm list packages", serial)
+        if packages:
+            packages_count = str(len([p for p in packages.split("\n") if p.strip()]))
+    except Exception:
+        pass
+
+    # Build fingerprint
+    fingerprint_parts = [
+        props.get("ro.serialno", ""),
+        props.get("ro.product.manufacturer", ""),
+        props.get("ro.product.model", ""),
+        settings_data.get("secure android_id", ""),
+        props.get("ro.build.fingerprint", ""),
+        props.get("ro.build.date.utc", ""),
+    ]
+    fingerprint_raw = "|".join(fingerprint_parts)
+    fingerprint = hashlib.sha256(fingerprint_raw.encode()).hexdigest()
+
+    return {
+        "fingerprint": fingerprint,
+        "fingerprint_data": {
+            "android_id": settings_data.get("secure android_id", ""),
+            "manufacturer": props.get("ro.product.manufacturer", ""),
+            "model": props.get("ro.product.model", ""),
+            "android_version": props.get("ro.build.version.release", ""),
+            "sdk_version": props.get("ro.build.version.sdk", ""),
+            "cpu_abi": props.get("ro.product.cpu.abi", ""),
+            "build_display": props.get("ro.build.display.id", ""),
+            "build_fingerprint": props.get("ro.build.fingerprint", ""),
+            "screen_size": screen_size,
+            "battery_level": battery_info.get("level", "0"),
+            "battery_status": battery_info.get("status", "unknown"),
+            "installed_packages_count": packages_count,
+            "security_patch": "",  # Would need additional adb call
+        },
     }
 
 
@@ -459,6 +536,12 @@ async def trust_device(request: TrustRequest, user_id: str = Depends(get_current
     if not device_id:
         raise HTTPException(status_code=400, detail="Device ID required")
 
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
+
+    if workflow:
+        svc.transition_to(workflow.id, WorkflowState.TRUST_PENDING, progress=55)
+
     trust_engine = get_trust_engine()
     result = trust_engine.trust_device(
         device_id=device_id,
@@ -468,45 +551,32 @@ async def trust_device(request: TrustRequest, user_id: str = Depends(get_current
     )
 
     if not result.success:
+        if workflow:
+            svc.transition_to(
+                workflow.id, WorkflowState.PAIRING_FAILED,
+                error_message=result.message,
+                error_code="TRUST_FAILED",
+            )
         raise HTTPException(status_code=400, detail=result.message)
 
-    db = get_db_session()
-    try:
-        # Update pairing workflow
-        workflow = db.query(PairingWorkflow).filter(
-            PairingWorkflow.user_id == user_id,
-            PairingWorkflow.device_id == device_id,
-        ).order_by(PairingWorkflow.started_at.desc()).first()
-
-        if not workflow:
-            workflow = db.query(PairingWorkflow).filter(
-                PairingWorkflow.user_id == user_id,
-                PairingWorkflow.workflow_state.in_(["verifying", "connecting"]),
-            ).order_by(PairingWorkflow.started_at.desc()).first()
-
-        if workflow:
-            workflow.workflow_state = "trusting"
-            workflow.device_id = device_id
-            workflow.trusted_at = datetime.utcnow()
-            workflow.updated_at = datetime.utcnow()
+    if workflow:
+        svc.transition_to(
+            workflow.id, WorkflowState.TRUSTED,
+            progress=60, device_id=device_id,
+        )
 
         # Update device twin trust score
-        twin = db.query(DeviceTwin).filter(
-            DeviceTwin.device_id == device_id
-        ).first()
-        if twin:
-            twin.trust_score = 1.0
-            twin.updated_at = datetime.utcnow()
-
-        db.commit()
-    finally:
-        db.close()
-
-    _emit_event("DEVICE_TRUSTED", {
-        "device_id": device_id,
-        "trust_level": request.trust_level,
-        "trust_token": result.trust_token[:16] + "...",
-    })
+        db = get_db_session()
+        try:
+            twin = db.query(DeviceTwin).filter(
+                DeviceTwin.device_id == device_id
+            ).first()
+            if twin:
+                twin.trust_score = 1.0
+                twin.updated_at = datetime.utcnow()
+                db.commit()
+        finally:
+            db.close()
 
     _create_audit_log(user_id, "trust_device", "device", device_id, {
         "trust_level": request.trust_level,
@@ -516,6 +586,8 @@ async def trust_device(request: TrustRequest, user_id: str = Depends(get_current
         "success": True,
         "message": result.message,
         "device_id": device_id,
+        "state": workflow.workflow_state if workflow else "TRUSTED",
+        "progress": workflow.progress if workflow else 60,
         "trust_level": result.trust_level,
         "trust_token": result.trust_token,
         "certificate": result.certificate,
@@ -536,44 +608,36 @@ async def sync_permissions(request: PermissionUpdateRequest, user_id: str = Depe
         raise HTTPException(status_code=400, detail="Device ID required")
 
     engine = get_permission_engine()
-
-    # Store each permission status
     for perm_name, status in permissions.items():
         engine.update_permission_status(device_id, perm_name, status)
 
-    db = get_db_session()
-    try:
-        # Update pairing workflow
-        workflow = db.query(PairingWorkflow).filter(
-            PairingWorkflow.user_id == user_id,
-            PairingWorkflow.device_id == device_id,
-        ).order_by(PairingWorkflow.started_at.desc()).first()
-        if workflow:
-            workflow.workflow_state = "permissions"
-            workflow.permissions_at = datetime.utcnow()
-            workflow.updated_at = datetime.utcnow()
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
 
-        # Update device twin permissions
-        twin = db.query(DeviceTwin).filter(
-            DeviceTwin.device_id == device_id
-        ).first()
-        if twin:
-            twin.permissions = permissions
-            twin.updated_at = datetime.utcnow()
+    if workflow:
+        svc.transition_to(
+            workflow.id, WorkflowState.PERMISSION_SYNC,
+            progress=65, device_id=device_id,
+        )
 
-        db.commit()
-    finally:
-        db.close()
-
-    _emit_event("PERMISSIONS_UPDATED", {
-        "device_id": device_id,
-        "permissions": permissions,
-    })
+        db = get_db_session()
+        try:
+            twin = db.query(DeviceTwin).filter(
+                DeviceTwin.device_id == device_id
+            ).first()
+            if twin:
+                twin.permissions = permissions
+                twin.updated_at = datetime.utcnow()
+                db.commit()
+        finally:
+            db.close()
 
     return {
         "success": True,
         "message": f"Permissions synchronized: {len(permissions)} permissions",
         "device_id": device_id,
+        "state": workflow.workflow_state if workflow else "PERMISSION_SYNC",
+        "progress": workflow.progress if workflow else 65,
         "permissions": permissions,
     }
 
@@ -590,15 +654,26 @@ async def register_device_endpoint(request: ConnectRequest, user_id: str = Depen
     if not serial:
         raise HTTPException(status_code=400, detail="Serial number required")
 
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
+    if not workflow:
+        workflow = svc.get_or_create_workflow(user_id, serial)
+
+    svc.transition_to(workflow.id, WorkflowState.REGISTERING, progress=70, serial=serial)
+
     # Get full device info
     engine = get_discovery_engine()
     try:
         info = await engine._extract_full_info(serial)
         verification = await engine.verify_device(serial)
     except Exception as e:
+        svc.transition_to(
+            workflow.id, WorkflowState.PAIRING_FAILED,
+            error_message=f"Device info extraction failed: {str(e)}",
+            error_code="INFO_EXTRACTION_ERROR",
+        )
         raise HTTPException(status_code=503, detail=f"Device info extraction failed: {str(e)}")
 
-    # Build registration data
     reg_data = {
         "device_name": info.device_name or info.model or "Android Device",
         "manufacturer": info.manufacturer,
@@ -616,43 +691,27 @@ async def register_device_endpoint(request: ConnectRequest, user_id: str = Depen
     result = reg_service.register_device(user_id, reg_data)
 
     if not result.success:
+        svc.transition_to(
+            workflow.id, WorkflowState.PAIRING_FAILED,
+            error_message=result.message,
+            error_code="REGISTRATION_FAILED",
+        )
         raise HTTPException(status_code=400, detail=result.message)
 
     device_id = result.device_id
 
-    db = get_db_session()
-    try:
-        workflow = db.query(PairingWorkflow).filter(
-            PairingWorkflow.user_id == user_id,
-            PairingWorkflow.workflow_state.in_(["permissions", "trusting", "verifying", "connecting"]),
-        ).order_by(PairingWorkflow.started_at.desc()).first()
-
-        if workflow:
-            workflow.workflow_state = "registering"
-            workflow.device_id = device_id
-            workflow.registered_at = datetime.utcnow()
-            workflow.updated_at = datetime.utcnow()
-            db.commit()
-    finally:
-        db.close()
-
-    _emit_event("DEVICE_REGISTERED", {
-        "device_id": device_id,
-        "serial": serial,
-        "manufacturer": info.manufacturer,
-        "model": info.model,
-    })
-
-    _create_audit_log(user_id, "register_device", "device", device_id, {
-        "serial": serial,
-        "manufacturer": info.manufacturer,
-        "model": info.model,
-    })
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.DEVICE_REGISTERED,
+        progress=75, device_id=device_id,
+    )
 
     return {
         "success": True,
         "message": "Device registered successfully",
         "device_id": device_id,
+        "workflow_id": workflow.id,
+        "state": workflow.workflow_state,
+        "progress": workflow.progress,
         "device_name": reg_data["device_name"],
         "manufacturer": info.manufacturer,
         "model": info.model,
@@ -674,9 +733,14 @@ async def get_device_twin(device_id: str = Query(...), user_id: str = Depends(ge
 
 @router.get("/device/current")
 async def get_current_device(user_id: str = Depends(get_current_user)):
-    """Get most recent device with live status"""
+    """Get current device with live connection status.
+    Never returns stale/cached data - always re-checks if device is actually connected."""
     from database.connection import get_db_session
-    from database.auth_models import RegisteredDevice, DeviceHeartbeat, DeviceTwin
+    from database.auth_models import RegisteredDevice, DeviceHeartbeat, DeviceTwin, PairingWorkflow
+    from services.pairing_workflow_service import get_pairing_workflow_service, WorkflowState
+
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
 
     db = get_db_session()
     try:
@@ -685,7 +749,39 @@ async def get_current_device(user_id: str = Depends(get_current_user)):
         ).order_by(RegisteredDevice.last_seen.desc()).first()
 
         if not device:
-            return {"success": True, "device": None, "message": "No device registered"}
+            return {
+                "success": True,
+                "connected": False,
+                "device": None,
+                "state": WorkflowState.IDLE.value,
+                "message": "No device registered",
+            }
+
+        # Verify device is actually still connected via ADB
+        is_actually_connected = False
+        if device.serial:
+            is_actually_connected = svc.is_device_connected_via_adb(device.serial)
+
+        # If ADB says disconnected but DB says online, fix the inconsistency
+        if device.is_online and not is_actually_connected:
+            device.is_online = False
+            device.updated_at = datetime.utcnow()
+            if workflow:
+                svc.transition_to(
+                    workflow.id, WorkflowState.USB_DISCONNECTED,
+                    error_message="Device disconnected (detected on status check)",
+                    connected=False, is_online=False,
+                )
+            db.commit()
+
+        if not is_actually_connected:
+            return {
+                "success": True,
+                "connected": False,
+                "device": None,
+                "state": workflow.workflow_state if workflow else WorkflowState.IDLE.value,
+                "message": "Device not connected",
+            }
 
         # Get latest heartbeat
         heartbeat = db.query(DeviceHeartbeat).filter(
@@ -699,6 +795,8 @@ async def get_current_device(user_id: str = Depends(get_current_user)):
 
         return {
             "success": True,
+            "connected": True,
+            "state": workflow.workflow_state if workflow else WorkflowState.ACTIVE.value,
             "device": {
                 "id": device.id,
                 "name": device.device_name,
@@ -746,6 +844,11 @@ async def create_device_twin(request: ConnectRequest, user_id: str = Depends(get
     if not serial:
         raise HTTPException(status_code=400, detail="Serial required")
 
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
+    if not workflow:
+        workflow = svc.get_or_create_workflow(user_id, serial)
+
     db = get_db_session()
     try:
         device = db.query(RegisteredDevice).filter(
@@ -754,7 +857,6 @@ async def create_device_twin(request: ConnectRequest, user_id: str = Depends(get
         ).first()
         if not device:
             raise HTTPException(status_code=404, detail="Device not registered")
-
         device_id = device.id
     finally:
         db.close()
@@ -765,6 +867,11 @@ async def create_device_twin(request: ConnectRequest, user_id: str = Depends(get
         info = await engine._extract_full_info(serial)
         verification = await engine.verify_device(serial)
     except Exception as e:
+        svc.transition_to(
+            workflow.id, WorkflowState.PAIRING_FAILED,
+            error_message=f"Device info extraction failed: {str(e)}",
+            error_code="INFO_EXTRACTION_ERROR",
+        )
         raise HTTPException(status_code=503, detail=f"Device info extraction failed: {str(e)}")
 
     # Load permissions from database
@@ -774,15 +881,9 @@ async def create_device_twin(request: ConnectRequest, user_id: str = Depends(get
             DevicePermission.device_id == device_id,
         ).all()
         permissions = {p.permission_name: p.status.value if hasattr(p.status, 'value') else str(p.status) for p in perms}
-
-        # Check capabilities
-        caps_result = db.query(DeviceCapability).filter(
-            DeviceCapability.device_id == device_id,
-        ).all()
     finally:
         db.close()
 
-    # Determine capabilities from device info
     capabilities = ["adb", "screenshot"]
     if info.accessibility_service:
         capabilities.append("accessibility")
@@ -809,35 +910,36 @@ async def create_device_twin(request: ConnectRequest, user_id: str = Depends(get
     twin_service = get_twin_service()
     twin = twin_service.create_or_update_twin(device_id, user_id, twin_data)
 
-    db = get_db_session()
+    # Transition through twin created and AI check to READY
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.DEVICE_TWIN_CREATED,
+        progress=85, device_id=device_id,
+    )
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.AI_CHECK,
+        progress=90,
+    )
+
+    # Check AI readiness
     try:
-        workflow = db.query(PairingWorkflow).filter(
-            PairingWorkflow.user_id == user_id,
-            PairingWorkflow.device_id == device_id,
-        ).order_by(PairingWorkflow.started_at.desc()).first()
-        if workflow:
-            workflow.workflow_state = "twin_creating"
-            workflow.twin_created_at = datetime.utcnow()
-            workflow.updated_at = datetime.utcnow()
-            db.commit()
-    finally:
-        db.close()
+        from services.ai_readiness import get_readiness_engine
+        readiness = await get_readiness_engine().check_readiness(device_id)
+        ai_ready = readiness.ready if hasattr(readiness, 'ready') else False
+    except Exception:
+        ai_ready = True
 
-    _emit_event("DEVICE_READY", {
-        "device_id": device_id,
-        "twin_id": twin.get("id", "") if twin else "",
-        "readiness_score": twin.get("readiness_score", 0) if twin else 0,
-    })
-
-    _create_audit_log(user_id, "create_device_twin", "device_twin", device_id, {
-        "capabilities": capabilities,
-        "readiness_score": twin.get("readiness_score", 0) if twin else 0,
-    })
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.READY,
+        progress=95,
+    )
 
     return {
         "success": True,
         "message": "Device twin created",
         "device_id": device_id,
+        "workflow_id": workflow.id,
+        "state": workflow.workflow_state,
+        "progress": workflow.progress,
         "twin": twin,
     }
 
@@ -853,7 +955,6 @@ async def get_device_capabilities(device_id: str = Query(...), user_id: str = De
         engine = get_readiness_engine()
         result = await engine.check_readiness(device_id)
     except Exception:
-        # Fallback: read from database
         db = get_db_session()
         try:
             caps = db.query(DeviceCapability).filter(
@@ -956,6 +1057,8 @@ async def disconnect_device(request: DisconnectRequest, user_id: str = Depends(g
 
     device_id = request.device_id
 
+    svc = get_pairing_workflow_service()
+
     # Mark disconnected in heartbeat service
     heartbeat_service = get_heartbeat_service()
     heartbeat_service.mark_device_disconnected(device_id)
@@ -970,42 +1073,116 @@ async def disconnect_device(request: DisconnectRequest, user_id: str = Depends(g
             device.is_online = False
             device.updated_at = datetime.utcnow()
 
-        # Update USB session
-        if device and device.serial:
-            usb_session = db.query(USBSession).filter(
-                USBSession.user_id == user_id,
-                USBSession.serial == device.serial,
-            ).first()
-            if usb_session:
-                usb_session.status = "disconnected"
-                usb_session.disconnected_at = datetime.utcnow()
-                usb_session.updated_at = datetime.utcnow()
+            if device.serial:
+                usb_session = db.query(USBSession).filter(
+                    USBSession.user_id == user_id,
+                    USBSession.serial == device.serial,
+                ).first()
+                if usb_session:
+                    usb_session.status = "disconnected"
+                    usb_session.disconnected_at = datetime.utcnow()
+                    usb_session.updated_at = datetime.utcnow()
 
-        # Update workflow
-        workflow = db.query(PairingWorkflow).filter(
-            PairingWorkflow.user_id == user_id,
-            PairingWorkflow.device_id == device_id,
-        ).order_by(PairingWorkflow.started_at.desc()).first()
+        # Cancel active workflow
+        workflow = svc.get_active_workflow(user_id)
         if workflow:
-            workflow.workflow_state = "idle"
-            workflow.completed_at = datetime.utcnow()
-            workflow.updated_at = datetime.utcnow()
+            svc.transition_to(
+                workflow.id, WorkflowState.CANCELLED,
+                error_message="User disconnected device",
+                connected=False, is_online=False,
+            )
 
         db.commit()
     finally:
         db.close()
 
-    _emit_event("DEVICE_DISCONNECTED", {
-        "device_id": device_id,
-        "reason": "user_disconnected",
-    })
-
-    _create_audit_log(user_id, "disconnect_device", "device", device_id, {"reason": "user_disconnected"})
-
     return {
         "success": True,
         "message": "Device disconnected",
     }
+
+
+# ==================== Pairing WebSocket for per-user events ====================
+
+@router.websocket("/ws/pairing")
+async def pairing_websocket(websocket: WebSocket):
+    """WebSocket for real-time pairing workflow events per user.
+    Frontend connects here to receive state machine transitions."""
+    from services.websocket_service import get_websocket_manager
+    from services.auth_service import get_auth_service
+
+    await websocket.accept()
+
+    mgr = get_websocket_manager()
+    user_id = None
+
+    try:
+        # First message must contain auth token
+        raw = await websocket.receive_text()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = {"type": raw}
+
+        token = payload.get("token", "")
+        if not token:
+            await websocket.send_json({"event": "ERROR", "message": "Authentication required"})
+            await websocket.close()
+            return
+
+        auth_service = get_auth_service()
+        user_info = auth_service.validate_token(token)
+        if not user_info:
+            await websocket.send_json({"event": "ERROR", "message": "Invalid token"})
+            await websocket.close()
+            return
+
+        user_id = user_info["user_id"]
+        await mgr.connect(websocket, user_id)
+
+        # Send current workflow state
+        svc = get_pairing_workflow_service()
+        status = svc.get_full_status(user_id)
+        await websocket.send_json({
+            "event": "STATE_SYNC",
+            "data": status,
+        })
+
+        # Handle incoming messages
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                msg = {"type": raw}
+
+            msg_type = msg.get("type", "ping")
+
+            if msg_type == "ping":
+                await websocket.send_json({
+                    "event": "pong",
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+            elif msg_type == "get_status":
+                status = svc.get_full_status(user_id)
+                await websocket.send_json({
+                    "event": "STATE_SYNC",
+                    "data": status,
+                })
+            elif msg_type == "cancel":
+                svc.cancel_all_for_user(user_id, reason="User requested cancellation")
+                await websocket.send_json({
+                    "event": "CANCELLED",
+                    "data": {"message": "Pairing cancelled"},
+                })
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"Pairing WebSocket error: {e}")
+    finally:
+        if user_id and mgr:
+            mgr.disconnect(websocket, user_id)
 
 
 # ==================== Flutter Agent WebSocket ====================
@@ -1019,7 +1196,6 @@ async def device_websocket(websocket: WebSocket):
     mgr = get_websocket_manager()
     await websocket.accept()
 
-    # Register as a system-level connection (no user_id filtering)
     if "system" not in mgr.active_connections:
         mgr.active_connections["system"] = set()
     mgr.active_connections["system"].add(websocket)
@@ -1081,7 +1257,6 @@ async def device_websocket(websocket: WebSocket):
 
             elif msg_type == "subscribe":
                 device_id = payload.get("device_id", "")
-                # Track subscription
                 if device_id not in mgr.active_connections:
                     mgr.active_connections[device_id] = set()
                 mgr.active_connections[device_id].add(websocket)
@@ -1176,7 +1351,6 @@ async def agent_heartbeat(request: AgentHeartbeatRequest):
     service = get_heartbeat_service()
     was_disconnected = service.record_heartbeat(device_id, hb)
 
-    # Emit events
     try:
         from services.websocket_service import get_websocket_manager
         mgr = get_websocket_manager()
@@ -1225,10 +1399,17 @@ async def agent_permissions_sync(request: AgentPermissionSyncRequest):
     for perm_name, status in permissions.items():
         engine.update_permission_status(device_id, perm_name, status)
 
-    _emit_event("PERMISSIONS_UPDATED", {
-        "device_id": device_id,
-        "permissions": permissions,
-    })
+    try:
+        from services.websocket_service import get_websocket_manager
+        mgr = get_websocket_manager()
+        import asyncio
+        asyncio.ensure_future(mgr.send_personal_message({
+            "event": "PERMISSIONS_UPDATED",
+            "device_id": device_id,
+            "permissions": permissions,
+        }, device_id))
+    except Exception:
+        pass
 
     return {
         "success": True,

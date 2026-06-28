@@ -180,6 +180,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Interconnection init failed: {e}")
 
+    # Start USB disconnect monitor
+    try:
+        from services.usb_monitor import get_usb_monitor
+        await get_usb_monitor().start()
+        logger.info("USB disconnect monitor started")
+    except Exception as e:
+        logger.warning(f"USB monitor start failed: {e}")
+
     logger.info("All services initialized")
     
     yield
@@ -188,6 +196,13 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 50)
     logger.info("APA-OS Backend Shutting Down")
     logger.info("=" * 50)
+
+    try:
+        from services.usb_monitor import get_usb_monitor
+        await get_usb_monitor().stop()
+        logger.info("USB monitor stopped")
+    except Exception as e:
+        logger.warning(f"USB monitor stop error: {e}")
 
     try:
         close_database()

@@ -600,6 +600,10 @@ app.include_router(unified_auth_router, prefix="/api")
 from api.device import router as device_router
 app.include_router(device_router)
 
+# Register USB Pairing API router (complete workflow for USB device discovery and pairing)
+from api.pairing_usb import router as pairing_usb_router
+app.include_router(pairing_usb_router, prefix="/api/device")
+
 
 # Health check endpoint
 @app.get("/")

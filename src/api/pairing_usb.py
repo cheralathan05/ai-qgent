@@ -90,6 +90,375 @@ async def get_pairing_status(user_id: str = Depends(get_current_user)):
     return {"success": True, **status}
 
 
+@router.post("/device/usb/start")
+async def usb_pair_start(user_id: str = Depends(get_current_user)):
+    """Start USB pairing workflow with initial device discovery
+    
+    Matches the frontend USB Pairing workflow requirements exactly:
+    - User clicks USB Pairing
+    - Frontend calls POST /api/device/usb/start
+    - Backend verifies ADB installation
+    - Backend runs adb devices
+    - If no device found: Show "Waiting for USB device..." with retry
+    - If unauthorized: Show authorization message
+    - If authorized: Return device info for frontend Step 2
+    """
+    from services.adb_service import get_adb_service, find_adb_binary
+    from services.usb_discovery_service import get_discovery_engine
+    from services.pairing_workflow_service import get_pairing_workflow_service, WorkflowState
+    from database.connection import get_db_session
+    from database.auth_models import USBSession
+    from datetime import datetime
+
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_or_create_workflow(user_id)
+
+    # Transition to SEARCHING state
+    workflow = svc.transition_to(
+        workflow.id, WorkflowState.DISCOVERING,
+        progress=10,
+    )
+    if not workflow:
+        raise HTTPException(status_code=500, detail="Failed to create workflow")
+
+    # Check ADB installation
+    try:
+        adb = get_adb_service(find_adb_binary())
+        adb.start_server()
+    except Exception as e:
+        logger.error(f"ADB initialization failed: {e}")
+        svc.transition_to(
+            workflow.id, WorkflowState.ADB_OFFLINE,
+            error_message="Android Platform Tools not found.",
+            error_code="ADB_MISSING",
+        )
+        return {
+            "success": False,
+            "status": "error",
+            "deviceId": None,
+            "model": None,
+            "manufacturer": None,
+            "android": None,
+            "battery": None,
+            "screen": None,
+            "authorized": False,
+            "error_message": "Android Platform Tools not found.",
+            "message": "Android Platform Tools not found.",
+            "progress": 0,
+        }
+
+    # Discover devices
+    engine = get_discovery_engine(adb)
+    try:
+        devices = await engine.discover()
+        if not devices:
+            # No device found - return waiting state
+            workflow = svc.transition_to(
+                workflow.id, WorkflowState.DISCOVERING,
+                progress=10,
+                message="Waiting for USB device...",
+            )
+
+            # Create waiting USB session
+            db = get_db_session()
+            try:
+                usb_session = db.query(USBSession).filter(
+                    USBSession.user_id == user_id,
+                    USBSession.serial.is_(None),
+                ).first()
+                if not usb_session:
+                    usb_session = USBSession(
+                        user_id=user_id,
+                        status="waiting",
+                    )
+                    db.add(usb_session)
+                db.commit()
+            finally:
+                db.close()
+
+            return {
+                "success": True,
+                "status": "waiting",
+                "deviceId": None,
+                "model": None,
+                "manufacturer": None,
+                "android": None,
+                "battery": None,
+                "screen": None,
+                "authorized": False,
+                "error_message": None,
+                "message": "Waiting for USB device...",
+                "progress": 10,
+                "retry_every": 2000,
+            }
+
+        # Device found - get first device
+        device = devices[0]
+
+        # Check authorization
+        if not device.adb_authorized:
+            # Not authorized - return unauthorized state
+            workflow = svc.transition_to(
+                workflow.id, WorkflowState.ADB_UNAUTHORIZED,
+                progress=10,
+                message="Please unlock your phone and allow USB debugging.",
+            )
+
+            db = get_db_session()
+            try:
+                usb_session = db.query(USBSession).filter(
+                    USBSession.user_id == user_id,
+                    USBSession.serial == device.serial,
+                ).first()
+                if not usb_session:
+                    usb_session = USBSession(
+                        user_id=user_id,
+                        serial=device.serial,
+                        status="unauthorized",
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        adb_authorized=False,
+                    )
+                    db.add(usb_session)
+                else:
+                    usb_session.status = "unauthorized"
+                    usb_session.adb_authorized = False
+                db.commit()
+            finally:
+                db.close()
+
+            return {
+                "success": True,
+                "status": "unauthorized",
+                "deviceId": None,
+                "model": None,
+                "manufacturer": None,
+                "android": None,
+                "battery": None,
+                "screen": None,
+                "authorized": False,
+                "error_message": None,
+                "message": "Please unlock your phone and allow USB debugging.",
+                "progress": 10,
+                "retry_every": 2000,
+            }
+
+        # Device authorized - proceed to CONNECTED
+        workflow = svc.transition_to(
+            workflow.id, WorkflowState.CONNECTED,
+            progress=25,
+            serial=device.serial,
+            manufacturer=device.manufacturer,
+            model=device.model,
+            android_version=device.android_version,
+            connected=True,
+            is_online=True,
+        )
+
+        # Update USB session
+        db = get_db_session()
+        try:
+            usb_session = db.query(USBSession).filter(
+                USBSession.user_id == user_id,
+                USBSession.serial == device.serial,
+            ).first()
+            if usb_session:
+                usb_session.status = "connected"
+                usb_session.adb_authorized = True
+                usb_session.manufacturer = device.manufacturer
+                usb_session.model = device.model
+                usb_session.updated_at = datetime.utcnow()
+                db.commit()
+            else:
+                usb_session = USBSession(
+                    user_id=user_id,
+                    serial=device.serial,
+                    status="connected",
+                    manufacturer=device.manufacturer,
+                    model=device.model,
+                    adb_authorized=True,
+                )
+                db.add(usb_session)
+                db.commit()
+        finally:
+            db.close()
+
+        return {
+            "success": True,
+            "status": "connected",
+            "deviceId": device.serial,
+            "model": device.model,
+            "manufacturer": device.manufacturer,
+            "android": device.android_version,
+            "battery": device.battery_percentage,
+            "screen": f"{device.screen_width}x{device.screen_height}",
+            "authorized": True,
+            "workflow_id": workflow.id,
+            "progress": 25,
+            "message": "USB device connected successfully",
+        }
+
+    except Exception as e:
+        logger.error(f"USB pairing start failed: {e}")
+        svc.transition_to(
+            workflow.id, WorkflowState.PAIRING_FAILED,
+            error_message=f"USB discovery error: {str(e)}",
+            error_code="DISCOVERY_ERROR",
+        )
+        raise HTTPException(status_code=503, detail=f"USB discovery failed: {str(e)}")
+
+
+@router.get("/device/usb/status")
+async def usb_status(user_id: str = Depends(get_current_user)):
+    """Get USB pairing status for frontend polling
+    
+    This endpoint matches the frontend polling requirement:
+    - GET /api/device/usb/status
+    - Polls every 2 seconds until {"status":"connected"}
+    - Returns status states: waiting, unauthorized, connected, error
+    """
+    from services.pairing_workflow_service import get_pairing_workflow_service, WorkflowState
+
+    svc = get_pairing_workflow_service()
+    status = svc.get_full_status(user_id)
+
+    if not status or status.get("state") == "IDLE":
+        return {
+            "success": True,
+            "status": "ready",
+            "message": "Ready to start USB pairing",
+            "progress": 0,
+        }
+
+    current_state = status.get("state")
+    progress = status.get("progress", 0)
+    message = status.get("message", "")
+
+    # Map workflow states to API status
+    if current_state == "DISCOVERING":
+        return {
+            "success": True,
+            "status": "waiting",
+            "message": message or "Waiting for USB device...",
+            "progress": progress or 10,
+        }
+
+    if current_state == "ADB_UNAUTHORIZED":
+        return {
+            "success": True,
+            "status": "unauthorized",
+            "message": message or "Please unlock your phone and allow USB debugging.",
+            "progress": progress or 10,
+        }
+
+    if current_state == "CONNECTED":
+        return {
+            "success": True,
+            "status": "connected",
+            "deviceId": status.get("device_id"),
+            "model": status.get("model"),
+            "manufacturer": status.get("manufacturer"),
+            "android": status.get("android_version"),
+            "battery": status.get("battery"),
+            "screen": f"{status.get('screen_width') or 0}x{status.get('screen_height') or 0}" if status.get("screen_width") else "0x0",
+            "authorized": True,
+            "workflow_id": status.get("workflow_id"),
+            "progress": progress or 25,
+            "message": message or "USB device connected",
+        }
+
+    if current_state in ("USB_DISCONNECTED", "ADB_OFFLINE", "VERIFICATION_FAILED", "PAIRING_FAILED", "TIMEOUT"):
+        return {
+            "success": True,
+            "status": "error",
+            "message": status.get("error_message") or message or "Pairing error occurred",
+            "progress": progress or 0,
+            "error_code": status.get("error_code"),
+        }
+
+    # Default response for other states
+    return {
+        "success": True,
+        "status": current_state.lower(),
+        "deviceId": status.get("device_id"),
+        "model": status.get("model"),
+        "manufacturer": status.get("manufacturer"),
+        "android": status.get("android_version"),
+        "battery": status.get("battery"),
+        "screen": f"{status.get('screen_width') or 0}x{status.get('screen_height') or 0}" if status.get("screen_width") else "0x0",
+        "authorized": status.get("connected", False),
+        "workflow_id": status.get("workflow_id"),
+        "progress": progress or 0,
+        "message": message or "Processing...",
+        "error_message": status.get("error_message"),
+    }
+
+
+@router.post("/device/usb/disconnect")
+async def usb_disconnect(user_id: str = Depends(get_current_user)):
+    """Disconnect USB device and reset workflow"""
+    from services.pairing_workflow_service import get_pairing_workflow_service, WorkflowState
+
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
+
+    if workflow:
+        svc.transition_to(
+            workflow.id, WorkflowState.IDLE,
+            error_message="User disconnected USB device",
+            connected=False,
+            is_online=False,
+        )
+
+    return {
+        "success": True,
+        "message": "USB device disconnected",
+    }
+
+
+@router.post("/device/usb/retry")
+async def usb_retry(user_id: str = Depends(get_current_user)):
+    """Retry USB pairing from waiting/unauthorized state"""
+    from services.pairing_workflow_service import get_pairing_workflow_service, WorkflowState
+
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
+
+    if workflow and workflow.workflow_state in [WorkflowState.DISCOVERING.value, WorkflowState.ADB_UNAUTHORIZED.value]:
+        svc.transition_to(
+            workflow.id, WorkflowState.DISCOVERING,
+            progress=10,
+            message="Retrying USB discovery...",
+        )
+
+    return {
+        "success": True,
+        "message": "Retrying USB discovery...",
+    }
+
+
+@router.post("/usb/disconnect")
+async def usb_disconnect(user_id: str = Depends(get_current_user)):
+    """Disconnect USB device and reset workflow"""
+    from services.pairing_workflow_service import get_pairing_workflow_service
+
+    svc = get_pairing_workflow_service()
+    workflow = svc.get_active_workflow(user_id)
+
+    if workflow:
+        svc.transition_to(
+            workflow.id, WorkflowState.IDLE,
+            error_message="User disconnected USB device",
+            connected=False,
+            is_online=False,
+        )
+
+    return {
+        "success": True,
+        "message": "USB device disconnected",
+    }
+
+
 @router.post("/usb/discover")
 async def usb_discover(user_id: str = Depends(get_current_user)):
     """Discover USB-connected Android devices with full info from real ADB"""

@@ -72,6 +72,41 @@ def init_database():
         conn.commit()
     Base.metadata.create_all(bind=engine)
 
+    # Auto-migrate: add missing columns to existing tables
+    logger.info("Running auto-migration for missing columns...")
+    inspector = None
+    try:
+        from sqlalchemy import inspect as sa_inspect
+        inspector = sa_inspect(engine)
+    except ImportError:
+        pass
+
+    if inspector:
+        with engine.connect() as conn:
+            for table in Base.metadata.sorted_tables:
+                existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
+                for col in table.columns:
+                    if col.name not in existing_cols:
+                        col_type = col.type.compile(engine.dialect)
+                        nullable = "NOT NULL" if not col.nullable else ""
+                        default = ""
+                        if col.default is not None:
+                            raw = col.default.arg
+                            if isinstance(raw, bool):
+                                default = f"DEFAULT {'true' if raw else 'false'}"
+                            elif isinstance(raw, int):
+                                default = f"DEFAULT {raw}"
+                            elif isinstance(raw, str):
+                                default = f"DEFAULT '{raw}'"
+                        parts = [f"ADD COLUMN {col.name} {col_type}", nullable, default]
+                        sql = f"ALTER TABLE {table.name} {' '.join(p for p in parts if p)}"
+                        try:
+                            conn.execute(text(sql))
+                            logger.info(f"Added missing column {table.name}.{col.name}")
+                        except Exception as e:
+                            logger.warning(f"Could not add {table.name}.{col.name}: {e}")
+            conn.commit()
+
 
 def get_db_session() -> Session:
     """Get database session"""
